@@ -40,8 +40,6 @@ jobs:
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          const config = JSON.parse(fs.readFileSync('matterbridge-hass.config.json', 'utf8'));
-          pkg.version = config.version;
           delete pkg.scripts;
           delete pkg.devDependencies;
           delete pkg.automator;
@@ -63,11 +61,11 @@ jobs:
         with:
           script: |
             const fs = require('node:fs');
-            const { version } = JSON.parse(fs.readFileSync('matterbridge-hass.config.json', 'utf8'));
+            const { version } = JSON.parse(fs.readFileSync('package.json', 'utf8'));
             const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
             const match = typeof version === 'string' && semver.exec(version);
             if (!match) {
-              throw new Error('matterbridge-hass.config.json must contain a valid SemVer version');
+              throw new Error('package.json must contain a valid SemVer version');
             }
 
             const tag = `v${version}`;
@@ -97,12 +95,12 @@ jobs:
               // Resolve annotated tags to their underlying commit as well.
               const { data } = await github.rest.repos.getCommit({ ...repo, ref: tagRef.ref });
               if (data.sha !== context.sha) {
-                throw new Error(`Tag ${tag} already points to another commit; bump the config version`);
+                throw new Error(`Tag ${tag} already points to another commit; bump the package.json version`);
               }
             }
 
             if (release?.draft && release.target_commitish !== context.sha) {
-              throw new Error(`Draft ${tag} belongs to another commit; bump the config version`);
+              throw new Error(`Draft ${tag} belongs to another commit; bump the package.json version`);
             }
 
             if (!tagRef) {
