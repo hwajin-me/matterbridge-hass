@@ -40,7 +40,7 @@ import {
 } from 'matterbridge';
 import { type AnsiLogger, CYAN, db, debugStringify, dn, er, hk, idn, ign, type LogLevel, nf, or, rs, wr, YELLOW } from 'matterbridge/logger';
 import type { ActionContext } from 'matterbridge/matter';
-import { BridgedDeviceBasicInformation, ColorControl, FanControl, LevelControl, ModeSelect, OnOff, PowerSource, ServiceArea } from 'matterbridge/matter/clusters';
+import { ColorControl, FanControl, LevelControl, ModeSelect, OnOff, PowerSource, ServiceArea } from 'matterbridge/matter/clusters';
 import { type ClusterId, getClusterNameById } from 'matterbridge/matter/types';
 import { deepEqual, fireAndForget, getErrorMessage, inspectError, isValidArray, isValidBoolean, isValidNumber, isValidObject, isValidString, waiter } from 'matterbridge/utils';
 
@@ -59,6 +59,7 @@ import {
   miredsToKelvin,
   temp,
 } from './converters.js';
+import { updateDeviceReachability } from './deviceReachability.js';
 import { type EnvironmentControl, updateEnvironmentControls } from './environmentControls.js';
 import { addEventEntity } from './event.entity.js';
 import { addHelperEntity } from './helper.entity.js';
@@ -95,7 +96,7 @@ import { savePayload } from './payload.js';
 import { writeReport } from './report.js';
 import { addSensorEntity } from './sensor.entity.js';
 import { StateCache } from './stateCache.js';
-import { vacuumDashboard, type VacuumControlBinding, type VacuumMapEntities } from './vacuumDashboard.js';
+import { defaultVacuumMapPattern, vacuumDashboard, type VacuumControlBinding, type VacuumMapEntities } from './vacuumDashboard.js';
 
 export interface HomeAssistantPlatformConfig extends PlatformConfig {
   host: string;
@@ -297,7 +298,8 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
 
     // Initialize air quality regex from config or use default
     this.airQualityRegex = this.createRegexFromConfig(config.airQualityRegex);
-    this.vacuumMapRegex = this.createRegexFromConfig(config.vacuumMapRegex ?? '', 'vacuum map');
+    const mapPattern = config.vacuumMapRegex?.trim() ?? '';
+    this.vacuumMapRegex = this.createRegexFromConfig(mapPattern.length ? mapPattern : defaultVacuumMapPattern, 'vacuum map');
 
     this.stateCache.log.logLevel = this.log.logLevel;
 
@@ -1489,10 +1491,18 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       this.log.debug(`Update handler: Endpoint ${entityId} for ${deviceId} not found: skipping it`);
       return;
     }
+    // Companion battery/diagnostic entities must not take an otherwise healthy RVC offline.
+    const vacuumIds = [...this.endpointNames.keys()].filter((id) => {
+      if (!id.startsWith('vacuum.')) return false;
+      const vacuumDeviceId = this.ha.hassEntities.get(id)?.device_id;
+      return (this.matterbridgeDevices.get(id) ?? (vacuumDeviceId ? this.matterbridgeDevices.get(vacuumDeviceId) : undefined)) === matterbridgeDevice;
+    });
+    if (vacuumIds.length || old_state.state === 'unavailable' || new_state.state === 'unavailable') {
+      await updateDeviceReachability(matterbridgeDevice, new_state, vacuumIds, this.ha.hassStates);
+    }
     // Set the device reachable attribute to false if the new state is unavailable and skip the update since the device is unreachable. Cache the last state of the entity to be able to create it on restart.
     if (old_state.state !== 'unavailable' && new_state.state === 'unavailable') {
       this.stateCache.add(old_state);
-      await matterbridgeDevice.setAttribute(BridgedDeviceBasicInformation, 'reachable', false, matterbridgeDevice.log);
       endpoint.log.debug(
         `Received update for entity ${CYAN}${entityId}${db} but the new state is unavailable, skipping the update and waiting for the device to become reachable again...`,
       );
@@ -1501,11 +1511,9 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
     // Set the device reachable attribute to true if the new state is available and remove the cached state since the device is reachable again.
     if (old_state.state === 'unavailable' && new_state.state !== 'unavailable') {
       this.stateCache.remove(old_state.entity_id);
-      await matterbridgeDevice.setAttribute(BridgedDeviceBasicInformation, 'reachable', true, matterbridgeDevice.log);
     }
     // Set the device reachable attribute to false if the new state is unavailable and skip the update since the device is unreachable. From onConfigure().
     if (old_state.state === 'unavailable' && new_state.state === 'unavailable') {
-      await matterbridgeDevice.setAttribute(BridgedDeviceBasicInformation, 'reachable', false, matterbridgeDevice.log);
       endpoint.log.debug(
         `Received update for entity ${CYAN}${entityId}${db} but the new state is unavailable, skipping the update and waiting for the device to become reachable again...`,
       );

@@ -2708,14 +2708,20 @@ describe('Matterbridge ' + NAME, () => {
       await expect(writeHumidityTarget(root, 60)).rejects.toThrow('Write service failed');
       expect(root.getAttribute(Humidistat.id, 'userSetpoint')).toBe(55);
       await invokeHumiditySettings(root, { userSetpoint: 50 });
-      await expect(root.setStateOf(root.behaviors.supported.humidistat, { userSetpoint: 46 })).rejects.toThrow();
+      await writeHumidityTarget(root, 48);
+      expect(root.getAttribute(Humidistat.id, 'userSetpoint')).toBe(50);
+      await invokeHumiditySettings(root, { userSetpoint: 47 });
+      expect(root.getAttribute(Humidistat.id, 'userSetpoint')).toBe(45);
+      await invokeHumiditySettings(root, { userSetpoint: 50 });
       callServiceSpy.mockRejectedValueOnce(new Error('HA service failed'));
       await expect(invokeHumiditySettings(root, { userSetpoint: 55 })).rejects.toThrow('HA service failed');
       expect(root.getAttribute(Humidistat.id, 'userSetpoint')).toBe(50);
-      for (const request of [{ userSetpoint: 71 }, { userSetpoint: 46 }, { mode: 2 }, { sleep: true }, { continuous: true }]) {
+      for (const request of [{ userSetpoint: 71 }, { userSetpoint: 29 }, { mode: 2 }]) {
         await expect(invokeHumiditySettings(root, request)).rejects.toThrow();
         expect(root.getAttribute(Humidistat.id, 'userSetpoint')).toBe(50);
       }
+      await invokeHumiditySettings(root, { sleep: true, continuous: true, optimal: true });
+      expect(root.getAttribute(Humidistat.id, 'userSetpoint')).toBe(50);
       callServiceSpy.mockClear();
       haPlatform.ha.hassStates.set(entity.entity_id, { ...state, state: 'unavailable' });
       await expect(invokeHumiditySettings(root, { userSetpoint: 50 })).rejects.toThrow('unavailable');

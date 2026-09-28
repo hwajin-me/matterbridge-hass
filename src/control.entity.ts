@@ -125,15 +125,21 @@ export function addControlEntity(
     }
   }
   const nativeHumidity = domain === 'humidifier' ? getNativeHumidityConfig(state, platform.config.humidifierDeviceType) : undefined;
-  if (domain === 'humidifier' && platform.config.humidifierDeviceType?.startsWith('native-') && !nativeHumidity)
-    platform.log.warn(`Using compatible humidity type for ${entity.entity_id}: native mode requires a device class and valid integer humidity limits, step and target.`);
+  if (domain === 'humidifier' && platform.config.humidifierDeviceType?.startsWith('native-') && !nativeHumidity) {
+    platform.log.error(
+      `Cannot expose ${entity.entity_id} as native HumidityConditioner: provide humidifier/dehumidifier device_class and valid integer humidity limits, step and target, or explicitly select compatible mode.`,
+    );
+    return undefined;
+  }
   // Add device type and clusterIds for supported domain of the current entity.
   hassDomainConverter
     .filter((d) => d.domain === domain && d.withAttribute === undefined)
     .forEach((hassDomain) => {
       if (!hassDomain.deviceType || !hassDomain.clusterId) return;
       endpointName = entity.entity_id;
-      platform.log.debug(`+ ${domain} device ${CYAN}${hassDomain.deviceType.name}${db} cluster ${CYAN}${getClusterNameById(hassDomain.clusterId)}${db}`);
+      platform.log.debug(
+        `+ ${domain} device ${CYAN}${(nativeHumidity ? humidityConditioner : hassDomain.deviceType).name}${db} cluster ${CYAN}${getClusterNameById(hassDomain.clusterId)}${db}`,
+      );
       mutableDevice.addDeviceTypes(endpointName, nativeHumidity ? humidityConditioner : hassDomain.deviceType);
       mutableDevice.addClusterServerIds(endpointName, hassDomain.clusterId);
       if (state.attributes && isValidString(state.attributes['friendly_name'])) mutableDevice.setFriendlyName(endpointName, state.attributes['friendly_name']);

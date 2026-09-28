@@ -3,7 +3,7 @@ import { FanControl } from 'matterbridge/matter/clusters';
 import { convertMatterWindToHA } from '../src/converters.js';
 import { addFanControl, hasFanFeature } from '../src/fanControl.js';
 import { FanEntityFeature, type HassState } from '../src/homeAssistant.js';
-import { getNativeHumidityConfig, humidityConditioner } from '../src/humidistat.js';
+import { getNativeHumidityConfig, humidityConditioner, snapHumidityTarget, TlvHumiditySettings } from '../src/humidistat.js';
 import type { MutableDevice } from '../src/mutableDevice.js';
 
 function state(attributes: Record<string, unknown>): HassState {
@@ -22,7 +22,8 @@ describe('Matter appliance capabilities', () => {
     for (const attributes of [
       { device_class: 'unknown' },
       { humidity: null },
-      { humidity: 46 },
+      { max_humidity: 69 },
+      { target_humidity_step: 50 },
       { min_humidity: 70 },
       { max_humidity: 101 },
       { target_humidity_step: 0 },
@@ -32,6 +33,21 @@ describe('Matter appliance capabilities', () => {
       expect(getNativeHumidityConfig(state({ ...source.attributes, ...attributes }), 'native-cold-mist')).toBeUndefined();
     }
     expect(humidityConditioner.code).toBe(0x007d);
+  });
+
+  it('should encode SetSettings with the standard context tag and unsigned percent TLV', () => {
+    const schema = TlvHumiditySettings;
+    const encoded = schema.encode({ userSetpoint: 50 });
+    expect(Array.from(encoded)).toEqual([0x15, 0x24, 0x00, 0x32, 0x18]);
+    expect(schema.decode(encoded)).toEqual({ userSetpoint: 50 });
+    expect(() => schema.encode({ userSetpoint: 101 })).toThrow();
+  });
+
+  it('should snap humidity targets to the closest step and round ties down', () => {
+    expect(snapHumidityTarget(46, 30, 70, 5)).toBe(45);
+    expect(snapHumidityTarget(48, 30, 70, 5)).toBe(50);
+    expect(snapHumidityTarget(45, 30, 70, 10)).toBe(40);
+    for (const value of [29, 71, 45.5, Number.NaN]) expect(() => snapHumidityTarget(value, 30, 70, 5)).toThrow();
   });
 
   it('should obey explicit capabilities and use attribute fallback only without a mask', () => {

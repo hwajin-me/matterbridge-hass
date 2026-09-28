@@ -217,9 +217,9 @@
     },
     "vacuumMapRegex": {
       "title": "Vacuum Map Regex",
-      "description": "Regex matching map image/camera entity IDs (e.g. '^(image|camera)\\..*(live_map|vacuum_map)$'). With one selected vacuum, also finds maps on a separate HA device such as Xiaomi Cloud Map Extractor. With multiple vacuums, use Vacuum Map Entities for explicit association. Leave empty for same-device discovery. Restart the plugin after changing.",
+      "description": "Map image/camera entity regex. Default (also when blank): ^(image|camera)\\..*_map$ \u2014 recognizes the _map suffix. With one selected vacuum, matching maps on separate HA devices are included. If the default matches nothing, same-device map discovery remains available. With multiple vacuums use Vacuum Map Entities for explicit association across devices. Restart after changing.",
       "type": "string",
-      "default": ""
+      "default": "^(image|camera)\\..*_map$"
     },
     "vacuumMapEntities": {
       "title": "Vacuum Map Entities",
@@ -236,7 +236,7 @@
     },
     "humidifierDeviceType": {
       "title": "Humidifier / Dehumidifier Matter type",
-      "description": "Applies to all humidifier and dehumidifier entities. Compatible is the default. Native uses provisional Humidity Conditioner/Humidistat definitions: choose the physical mist type for humidifiers; either native option supports dehumidifiers. Unsupported HA metadata falls back to Compatible. Save and restart the plugin to apply. Controllers may require rediscovery or re-pairing after changing the device type.",
+      "description": "Applies to all humidifier and dehumidifier entities. Compatible is the default. Native uses provisional Humidity Conditioner/Humidistat definitions: choose the physical mist type for humidifiers; either native option supports dehumidifiers. Invalid HA metadata prevents native registration; correct the metadata or explicitly choose Compatible. Save and restart the plugin to apply. Controllers may require rediscovery or re-pairing after changing the device type. Native is an experimental Matter type, not HomeKit Humidifier support; selecting it does not guarantee a humidifier control in Apple Home. Compatible exposes an outlet plus humidity sensor.",
       "type": "string",
       "default": "compatible",
       "oneOf": [

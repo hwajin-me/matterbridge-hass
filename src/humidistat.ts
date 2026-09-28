@@ -36,7 +36,8 @@ import { getClusterServerObj, type MutableDevice } from './mutableDevice.js';
 
 const percent = TlvUInt8.bound({ max: 100 });
 const mode = TlvUInt8.bound({ max: 3 });
-const settings = TlvObject({
+/** Wire request for Humidistat SetSettings (command 0x00). */
+export const TlvHumiditySettings = TlvObject({
   userSetpoint: TlvOptionalField(0, percent),
   mode: TlvOptionalField(1, mode),
   mistType: TlvOptionalField(2, TlvUInt8.bound({ max: 3 })),
@@ -61,7 +62,7 @@ export const Humidistat = ClusterType({
     step: FixedAttribute(6, percent),
     mistType: OptionalWritableAttribute(8, TlvUInt8.bound({ max: 3 })),
   },
-  commands: { setSettings: Command(0, settings, 0, TlvVoid) },
+  commands: { setSettings: Command(0, TlvHumiditySettings, 0, TlvVoid) },
 });
 
 /** Provisional humidity appliance type, distinct from an outlet or a measurement-only humidity sensor. */
@@ -90,7 +91,7 @@ export interface NativeHumidityConfig {
  *
  * @param {HassState} state - Source humidifier state.
  * @param {string | undefined} selection - Explicit native cold/warm mist choice, or compatible.
- * @returns {NativeHumidityConfig | undefined} Native configuration, or undefined for safe compatibility fallback.
+ * @returns {NativeHumidityConfig | undefined} Native configuration, or undefined when not selected or metadata is invalid.
  */
 /* oxlint-disable typescript/consistent-return -- Undefined requests the compatible mapping. */
 export function getNativeHumidityConfig(state: HassState, selection: string | undefined): NativeHumidityConfig | undefined {
@@ -102,18 +103,33 @@ export function getNativeHumidityConfig(state: HassState, selection: string | un
   const step = attrs.target_humidity_step ?? 1;
   const target = attrs.humidity;
   if (![min, max, step, target].every((value) => typeof value === 'number' && Number.isInteger(value))) return;
-  if (typeof target !== 'number' || min < 0 || max > 100 || min >= max || step < 1 || step > 100 || target < min || target > max || (target - min) % step !== 0) return;
+  if (typeof target !== 'number' || min < 0 || max > 100 || min >= max || step < 1 || step > max - min || (max - min) % step !== 0 || target < min || target > max) return;
   return {
     mode: attrs.device_class === 'dehumidifier' ? 1 : 0,
     min,
     max,
     step,
-    target,
+    target: snapHumidityTarget(target, min, max, step),
     ...(attrs.device_class === 'humidifier' ? { mist: selection === 'native-warm-mist' ? 2 : 1 } : {}),
   };
 }
 
 /* oxlint-enable typescript/consistent-return */
+
+/**
+ * Validates a requested percentage and snaps it to the nearest supported step (ties round down).
+ *
+ * @param {number} value - Requested relative humidity in percent.
+ * @param {number} min - Minimum supported percentage.
+ * @param {number} max - Maximum supported percentage.
+ * @param {number} step - Supported integer percentage step.
+ * @returns {number} Normalized percentage, or throws ConstraintError outside the range.
+ */
+export function snapHumidityTarget(value: number, min: number, max: number, step: number): number {
+  if (!Number.isInteger(value) || value < min || value > max) throw new StatusResponseError('Humidity outside supported range', Status.ConstraintError);
+  const remainder = (value - min) % step;
+  return value - remainder + (remainder * 2 > step ? step : 0);
+}
 
 // Attach global attribute type definitions for this provisional cluster in the installed runtime.
 Humidistat.schema.parent = Matter;
@@ -142,21 +158,26 @@ export function addNativeHumidifier(device: MutableDevice, endpoint: string, con
         this.maybeReactTo(this.events.mistType$Changing, (value: number) => {
           if (value !== config.mist) throw new StatusResponseError('Fixed mist type', Status.ConstraintError);
         });
-      this.reactTo(this.events.userSetpoint$Changing, (value: number, _oldValue: number, context: ActionContext) => {
-        if (!Number.isInteger(value) || value < config.min || value > config.max || (value - config.min) % config.step !== 0) {
-          throw new StatusResponseError('Humidity outside supported range or step', Status.ConstraintError);
-        }
-        if (!context.fabric) return;
-        let applied = false;
-        context.transaction.addParticipants({
-          toString: () => 'Home Assistant humidity target',
-          preCommit: async () => {
-            if (applied) return false;
-            await this.applyTarget(value);
-            applied = true;
-            return false;
-          },
-        });
+      // oxlint-disable-next-line typescript/unbound-method -- Matter binds reactors to the active transaction behavior.
+      this.reactTo(this.events.userSetpoint$Changing, this.targetChanging);
+    }
+
+    private targetChanging(value: number, _oldValue: number, context: ActionContext): void {
+      const target = snapHumidityTarget(value, config.min, config.max, config.step);
+      if ((!context.fabric && target === value) || context.transaction.getParticipant(config)) return;
+      let applied = false;
+      context.transaction.addParticipants({
+        role: config,
+        toString: () => `Home Assistant humidity target ${endpoint}`,
+        preCommit: async () => {
+          if (applied) return false;
+          applied = true;
+          if (context.fabric) await this.applyTarget(target);
+          this.agent.asLocalActor(() => {
+            this.state.userSetpoint = target;
+          });
+          return false;
+        },
       });
     }
 
@@ -178,18 +199,13 @@ export function addNativeHumidifier(device: MutableDevice, endpoint: string, con
      * @returns {Promise<void>} Applies the validated target and propagates service failures.
      */
     async setSettings(request: { userSetpoint?: number; mode?: number; mistType?: number; continuous?: boolean; sleep?: boolean; optimal?: boolean }): Promise<void> {
-      if (
-        request.continuous !== undefined ||
-        request.sleep !== undefined ||
-        request.optimal !== undefined ||
-        (request.mode !== undefined && request.mode !== config.mode) ||
-        (request.mistType !== undefined && request.mistType !== config.mist)
-      ) {
-        throw new StatusResponseError('Unsupported humidity setting', Status.InvalidCommand);
-      }
+      // The reference SetSettings implementation ignores fields for features that are not supported.
+      if (request.mode !== undefined && request.mode !== config.mode) throw new StatusResponseError('Unsupported humidity mode', Status.ConstraintError);
+      if (config.mist !== undefined && request.mistType !== undefined && request.mistType !== config.mist)
+        throw new StatusResponseError('Unsupported mist type', Status.ConstraintError);
       if (request.userSetpoint !== undefined) {
-        await this.applyTarget(request.userSetpoint);
-        const target = request.userSetpoint;
+        const target = snapHumidityTarget(request.userSetpoint, config.min, config.max, config.step);
+        await this.applyTarget(target);
         this.agent.asLocalActor(() => {
           this.state.userSetpoint = target;
         });
@@ -225,8 +241,8 @@ export async function updateNativeHumidity(endpoint: MatterbridgeEndpoint, state
   const min = endpoint.getAttribute(Humidistat.id, 'minSetpoint');
   const max = endpoint.getAttribute(Humidistat.id, 'maxSetpoint');
   const step = endpoint.getAttribute(Humidistat.id, 'step');
-  if (typeof target === 'number' && Number.isInteger(target) && target >= min && target <= max && (target - min) % step === 0) {
-    await endpoint.setAttribute(Humidistat.id, 'userSetpoint', target, endpoint.log);
+  if (typeof target === 'number' && Number.isInteger(target) && target >= min && target <= max) {
+    await endpoint.setAttribute(Humidistat.id, 'userSetpoint', snapHumidityTarget(target, min, max, step), endpoint.log);
   }
   const action = state.attributes.action;
   const operatingMode = endpoint.getAttribute(Humidistat.id, 'mode');

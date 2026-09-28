@@ -5,6 +5,9 @@ import { type HassEntity, type HassState, type HomeAssistant, VacuumEntityFeatur
 import { parseVacuumMetadata } from './vacuumMetadata.js';
 import { readVacuumPosition, transformVacuumPoint, vacuumPoint } from './vacuumPosition.js';
 
+/** Default map entity suffix used when Settings has no custom expression. */
+export const defaultVacuumMapPattern = '^(image|camera)\\..*_map$';
+
 const commands: Readonly<Record<string, number>> = {
   start: VacuumEntityFeature.START,
   pause: VacuumEntityFeature.PAUSE,
@@ -56,9 +59,9 @@ function mapEntities(context: VacuumDashboardContext, vacuumId: string): string[
   // A separate map integration can have its own HA device. Regex fallback is
   // unambiguous only when exactly one selected vacuum exists.
   const vacuumCount = [...context.endpointNames.keys()].filter((id) => id.startsWith('vacuum.')).length;
-  if (!configured && context.vacuumMapRegex && vacuumCount === 1) {
-    const regex = context.vacuumMapRegex;
-    candidates = [
+  if (!configured && vacuumCount === 1) {
+    const regex = context.vacuumMapRegex ?? new RegExp(defaultVacuumMapPattern);
+    const matches = [
       ...new Set(
         [...candidates, ...context.ha.hassStates.keys()].filter((id) => {
           regex.lastIndex = 0;
@@ -66,6 +69,7 @@ function mapEntities(context: VacuumDashboardContext, vacuumId: string): string[
         }),
       ),
     ];
+    if (matches.length || (context.vacuumMapRegex && context.vacuumMapRegex.source !== defaultVacuumMapPattern)) candidates = matches;
   }
   return candidates.filter((id) => /^(camera|image)\.[a-z0-9_]+$/.test(id) && context.ha.hassStates.has(id));
 }

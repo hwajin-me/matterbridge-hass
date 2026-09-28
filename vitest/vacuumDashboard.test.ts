@@ -58,7 +58,7 @@ describe('vacuum dashboard', () => {
     context.ha.hassEntities.set('camera.virtual_map', { entity_id: 'camera.virtual_map', device_id: 'robot', platform: 'virtual_layer' } as HassEntity);
     context.ha.hassStates.set('camera.virtual_map', state('camera.virtual_map'));
     expect(await vacuumDashboard(context, 'GET', 'vacuums')).toMatchObject({
-      vacuums: [{ integration: 'virtual_layer', commands: ['start', 'clean_spot'], maps: ['image.floor', 'camera.virtual_map'] }],
+      vacuums: [{ integration: 'virtual_layer', commands: ['start', 'clean_spot'], maps: ['camera.virtual_map'] }],
     });
     for (const command of ['start', 'clean_spot']) {
       expect(await vacuumDashboard(context, 'POST', 'vacuum-command', undefined, { vacuum: 'vacuum.robot', command })).toEqual({ ok: true });
@@ -133,6 +133,16 @@ describe('vacuum dashboard', () => {
     context.config.vacuumControlBindings = {};
     expect(await vacuumDashboard(context, 'POST', 'vacuum-command', undefined, body)).toHaveProperty('error');
     expect(context.ha.callService).toHaveBeenCalledTimes(1);
+  });
+  it('recognizes the _map suffix on separate map devices by default without matching unrelated entities', async () => {
+    const context = fixture();
+    context.ha.hassStates.set('image.robot_map', state('image.robot_map'));
+    context.ha.hassStates.set('camera.downstairs_map', state('camera.downstairs_map'));
+    context.ha.hassStates.set('sensor.robot_map', state('sensor.robot_map'));
+    context.ha.hassStates.set('camera.map_debug', state('camera.map_debug'));
+    expect(await vacuumDashboard(context, 'GET', 'vacuums')).toMatchObject({ vacuums: [{ maps: ['image.robot_map', 'camera.downstairs_map'] }] });
+    context.config.vacuumMapEntities = { 'vacuum.robot': 'image.floor' };
+    expect(await vacuumDashboard(context, 'GET', 'vacuums')).toMatchObject({ vacuums: [{ maps: ['image.floor'] }] });
   });
   it('rejects disconnected reads and unsupported routes', async () => {
     const context = fixture();

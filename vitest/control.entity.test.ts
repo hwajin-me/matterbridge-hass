@@ -83,6 +83,15 @@ describe('addControlEntity', () => {
     return [md, { entity_id: `${domain}.${name}` } as HassEntity, { attributes: attrs } as HassState] as const;
   };
 
+  it('rejects invalid native humidity metadata before adding an outlet', () => {
+    const [md, entity, state] = make('humidifier', 'native_invalid', { humidity: 45 });
+    const platform = { ...mockPlatform, config: { ...mockPlatform.config, humidifierDeviceType: 'native-cold-mist' } };
+    expect(addControlEntity(platform, md, entity, state, commandHandler, subscribeHandler)).toBeUndefined();
+    expect(mockLog.error).toHaveBeenCalledWith(expect.stringContaining('Cannot expose humidifier.native_invalid as native HumidityConditioner'));
+    expect(md.addDeviceTypes).not.toHaveBeenCalled();
+    expect(md.addClusterServerIds).not.toHaveBeenCalled();
+  });
+
   it('returns undefined for unsupported domain', () => {
     const [md, e, s] = make('scene', 'x', {});
     expect(addControlEntity(mockPlatform, md, e as any, s as any, commandHandler, subscribeHandler as any)).toBeUndefined();

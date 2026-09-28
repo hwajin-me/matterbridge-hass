@@ -28,5 +28,6 @@
   "virtualControlLabel": "",
   "mediaPlayerControlsOnly": false,
   "debug": false,
-  "unregisterOnShutdown": false
+  "unregisterOnShutdown": false,
+  "vacuumMapRegex": "^(image|camera)\\..*_map$"
 }
