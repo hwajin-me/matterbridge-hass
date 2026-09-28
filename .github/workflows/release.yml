@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout pushed commit
         uses: actions/checkout@v6
@@ -86,17 +86,28 @@ jobs:
             }
 
             // Never attach a new release to a pre-existing tag on another commit.
+            // The refs API returns 404 for absent tags; the commits API can return 422.
+            let tagRef;
             try {
-              const { data } = await github.rest.repos.getCommit({ ...repo, ref: `tags/${tag}` });
+              ({ data: tagRef } = await github.rest.git.getRef({ ...repo, ref: `tags/${tag}` }));
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (tagRef) {
+              // Resolve annotated tags to their underlying commit as well.
+              const { data } = await github.rest.repos.getCommit({ ...repo, ref: tagRef.ref });
               if (data.sha !== context.sha) {
                 throw new Error(`Tag ${tag} already points to another commit; bump the config version`);
               }
-            } catch (error) {
-              if (error.status !== 404) throw error;
             }
 
             if (release?.draft && release.target_commitish !== context.sha) {
               throw new Error(`Draft ${tag} belongs to another commit; bump the config version`);
+            }
+
+            if (!tagRef) {
+              await github.rest.git.createRef({ ...repo, ref: `refs/tags/${tag}`, sha: context.sha });
+              core.info(`Created tag ${tag} at ${context.sha}`);
             }
 
             if (!release) ({ data: release } = await github.rest.repos.createRelease({
