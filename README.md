@@ -402,6 +402,8 @@ Enable the Robot Vacuum Cleaner in server mode. Apple Home will crash unless you
 
 In addition to this well known bugs, the rvc must be a single device, it cannot have any other device types like switch or whatever. So if your integration adds any other device types, blacklist or split them.
 
+In server mode, the plugin always promotes the vacuum to the main endpoint, for both `Merge` and `Matter` controller strategies (including individual and split entities). The advertised primary type is RoboticVacuumCleaner, even when battery metadata is present. Companion controls remain on separate child endpoints so their `changeToMode` handlers cannot capture vacuum commands. This does not change the vacuum name, serial number or unique ID. Map matching, including the default `_map` suffix, only selects dashboard images and does not filter vacuum registration.
+
 ### Discard Hidden Entities
 
 If enabled (default), the plugin discards entities that are hidden in Home Assistant (i.e. entities whose `hidden_by` field is not `null` in the entity registry). Hidden entities will not be exposed as device entities, individual entities, or split entities.

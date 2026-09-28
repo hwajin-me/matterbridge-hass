@@ -3,7 +3,7 @@
  * @description This file contains the class MutableDevice.
  * @author Luca Liguori
  * @created 2024-12-08
- * @version 1.4.0
+ * @version 1.4.1
  * @license Apache-2.0
  *
  * Copyright 2024, 2025, 2026 Luca Liguori.
@@ -50,6 +50,7 @@ import {
   onOffLightSwitch,
   onOffPlugInUnit,
   type PlatformMatterbridge,
+  roboticVacuumCleaner,
 } from 'matterbridge';
 import {
   MatterbridgeKeypadInputServer,
@@ -1046,6 +1047,7 @@ export class MutableDevice {
 
   /**
    * Create the mutable device.
+   * Standalone vacuums always use the main endpoint and keep companion controls separate.
    *
    * @param {boolean} remap - Whether to remap the not overlapping child endpoints to the main endpoint. Default is false.
    *
@@ -1054,8 +1056,10 @@ export class MutableDevice {
   create(remap: boolean = false): MatterbridgeEndpoint {
     // Remove duplicates and superset device types on all endpoints
     this.removeDuplicatedAndSupersetDeviceTypes();
+    const serverVacuum =
+      this.mode === 'server' && Array.from(this.mutableDevices.values()).some((device) => device.deviceTypes.some((type) => type.code === roboticVacuumCleaner.code));
     // With remap add all required cluster server to the child endpoints
-    if (remap) {
+    if (remap || serverVacuum) {
       for (const [_endpoint, device] of Array.from(this.mutableDevices.entries()).filter(([endpoint]) => endpoint !== '')) {
         device.deviceTypes.forEach((deviceType) => {
           deviceType.requiredServerClusters.forEach((clusterId) => {
@@ -1068,9 +1072,13 @@ export class MutableDevice {
     // Filter out duplicate clusters and clusters objects on all endpoints
     this.removeDuplicatedClusterServers();
     // Remap the not overlapping child endpoints to the main endpoint
-    if (remap) {
+    if (remap || serverVacuum) {
       // Scan the child endpoints for the same device types and clusters
       for (const [endpoint, device] of Array.from(this.mutableDevices.entries()).filter(([endpoint]) => endpoint !== '')) {
+        // A standalone RVC must be the main application endpoint even with the
+        // Matter strategy. Keep companion controls separate: ModeSelect and RVC
+        // both use changeToMode, and merging them mixes command handlers.
+        if (serverVacuum && !device.deviceTypes.some((type) => type.code === roboticVacuumCleaner.code)) continue;
         // this.log.debug(`Remapping endpoint ${endpoint}...`);
         let remapEndpoint = true;
         // Check duplicated device types
@@ -1165,6 +1173,9 @@ export class MutableDevice {
     // Remove bridgedNode on server mode
     if (this.mode === 'server') {
       mainDevice.deviceTypes = mainDevice.deviceTypes.filter((deviceType) => deviceType.code !== bridgedNode.code);
+      // Matterbridge advertises the first type as the standalone device type.
+      // Battery metadata must not turn a vacuum into a PowerSource accessory.
+      mainDevice.deviceTypes.sort((a, b) => Number(b.code === roboticVacuumCleaner.code) - Number(a.code === roboticVacuumCleaner.code));
     }
     mainDevice.friendlyName = this.deviceName;
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion

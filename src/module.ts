@@ -3,7 +3,7 @@
  * @description This file contains the class HomeAssistantPlatform.
  * @author Luca Liguori
  * @created 2024-09-13
- * @version 1.8.1
+ * @version 1.8.2
  * @license Apache-2.0
  *
  * Copyright 2024, 2025, 2026 Luca Liguori.
@@ -607,7 +607,10 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
           /* v8 ignore next cause is not testable */
           if (!this.dryRun && !mutableDevice.getEndpoint().owner) throw new Error(`Endpoint not created`);
           this.matterbridgeDevices.set(entity.entity_id, mutableDevice.getEndpoint());
-          this.endpointNames.set(entity.entity_id, this.config.controllerStrategy === 'Merge' ? '' : entity.entity_id);
+          this.endpointNames.set(
+            entity.entity_id,
+            this.config.controllerStrategy === 'Merge' || mutableDevice.getRemappedEndpoints().has(entity.entity_id) ? '' : entity.entity_id,
+          );
         } catch (error) {
           this.failedEntities++;
           inspectError(this.log, `Failed to register device ${dn}${entityName}${er}`, error);
@@ -1004,7 +1007,10 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
           /* v8 ignore next cause is not testable */
           if (!this.dryRun && !mutableDevice.getEndpoint().owner) throw new Error(`Endpoint not created`);
           this.matterbridgeDevices.set(entity.entity_id, mutableDevice.getEndpoint());
-          this.endpointNames.set(entity.entity_id, this.config.controllerStrategy === 'Merge' ? '' : entity.entity_id);
+          this.endpointNames.set(
+            entity.entity_id,
+            this.config.controllerStrategy === 'Merge' || mutableDevice.getRemappedEndpoints().has(entity.entity_id) ? '' : entity.entity_id,
+          );
         } catch (error) {
           this.failedEntities++;
           inspectError(this.log, `Failed to register device ${dn}${entityName}${er}`, error);
