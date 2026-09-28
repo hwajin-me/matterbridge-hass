@@ -23,20 +23,24 @@ import path from 'node:path';
 
 import { invokeBehaviorCommand, invokeSubscribeHandler, MatterbridgeEndpoint, occupancySensor } from 'matterbridge';
 import { CYAN, db, dn, hk, idn, LogLevel, nf, or, rs, wr } from 'matterbridge/logger';
-import { Lifecycle } from 'matterbridge/matter';
+import { type ActionContext, Lifecycle } from 'matterbridge/matter';
 import {
   AirQuality,
   BooleanState,
   CarbonDioxideConcentrationMeasurement,
   CarbonMonoxideConcentrationMeasurement,
   ColorControl,
+  Descriptor,
+  Identify,
   DoorLock,
   ElectricalEnergyMeasurement,
   ElectricalPowerMeasurement,
   FanControl,
   FormaldehydeConcentrationMeasurement,
+  Groups,
   IlluminanceMeasurement,
   LevelControl,
+  ModeSelect,
   NitrogenDioxideConcentrationMeasurement,
   OccupancySensing,
   OnOff,
@@ -89,6 +93,7 @@ import {
 
 import { miredsToKelvin } from '../src/converters.js';
 import { ColorMode, type HassConfig, type HassContext, type HassDevice, type HassEntity, type HassServices, type HassState, HomeAssistant } from '../src/homeAssistant.js';
+import { Humidistat } from '../src/humidistat.js';
 import type { HomeAssistantPlatform as HomeAssistantPlatformType, HomeAssistantPlatformConfig } from '../src/module.js';
 import { MutableDevice } from '../src/mutableDevice.js';
 
@@ -161,6 +166,27 @@ MatterbridgeEndpoint.logLevel = LogLevel.DEBUG; // Set the log level for Matterb
 // Setup the test environment
 await setupTest(NAME, false);
 
+async function invokeHumiditySettings(endpoint: MatterbridgeEndpoint, request: Record<string, number | boolean | undefined>): Promise<void> {
+  await endpoint.act(async (agent) => {
+    const server = agent.get(endpoint.behaviors.supported.humidistat) as unknown as { setSettings: (settings: Record<string, number | boolean | undefined>) => Promise<void> };
+    await server.setSettings(request);
+  });
+}
+
+// Exercise remote-write validation and the real transaction, without commissioning a network client.
+async function writeHumidityTarget(endpoint: MatterbridgeEndpoint, target: number): Promise<void> {
+  await endpoint.act((agent) => {
+    const server = agent.get(endpoint.behaviors.supported.humidistat) as unknown as {
+      state: { userSetpoint: number };
+      events: { userSetpoint$Changing: { emit: (value: number, oldValue: number, context: ActionContext) => void } };
+    };
+    const previous = server.state.userSetpoint;
+    server.state.userSetpoint = target;
+    const remoteContext = { ...agent.context, fabric: { fabricIndex: 1 } } as unknown as ActionContext;
+    server.events.userSetpoint$Changing.emit(target, previous, remoteContext);
+  });
+}
+
 describe('Matterbridge ' + NAME, () => {
   let haPlatform: HomeAssistantPlatformType;
 
@@ -218,6 +244,7 @@ describe('Matterbridge ' + NAME, () => {
     // Clean the test environment
     haPlatform.matterbridgeDevices.clear();
     haPlatform.endpointNames.clear();
+    haPlatform.environmentControls.clear();
     haPlatform.batteryVoltageEntities.clear();
     haPlatform.updatingEntities.clear();
     haPlatform.offUpdatedEntities.clear();
@@ -651,6 +678,17 @@ describe('Matterbridge ' + NAME, () => {
     expect(device.getAttribute(ElectricalPowerMeasurement.id, 'activeCurrent')).toBe(10000);
     expect(device.getAttribute(ElectricalPowerMeasurement.id, 'activePower')).toBe(23000);
     expect(device.getAttribute(ElectricalEnergyMeasurement.id, 'cumulativeEnergyImported').energy).toBe(100000000);
+    const totalEnergy = {
+      ...electricalSensorEnergyEntityState,
+      state: '0.125',
+      attributes: { ...electricalSensorEnergyEntityState.attributes, state_class: 'total', unit_of_measurement: 'MWh' },
+    } as HassState;
+    await haPlatform.updateHandler(electricalSensorDevice.id, totalEnergy.entity_id, electricalSensorEnergyEntityState, totalEnergy);
+    expect(device.getAttribute(ElectricalEnergyMeasurement, 'cumulativeEnergyImported')?.energy).toBe(125000000);
+    for (const invalid of ['unknown', 'NaN', '-1']) {
+      await haPlatform.updateHandler(electricalSensorDevice.id, totalEnergy.entity_id, totalEnergy, { ...totalEnergy, state: invalid });
+      expect(device.getAttribute(ElectricalEnergyMeasurement, 'cumulativeEnergyImported')?.energy).toBe(125000000);
+    }
 
     // Clean the test environment
     await cleanup();
@@ -1582,6 +1620,76 @@ describe('Matterbridge ' + NAME, () => {
       expect.stringContaining(`Subscribed attribute ${hk}FanControl${db}:${hk}percentSetting${db} on endpoint ${or}${device.maybeId}${db}:${or}${device.maybeNumber}${db} changed`),
     );
 
+    // A stepped fan accepts 20% for a 29% request. Both Matter values must reflect HA.
+    await flushAsync();
+    const acceptedState = { ...fanState, attributes: { ...fanState.attributes, preset_mode: null, percentage: 20, percentage_step: 20 } } as HassState;
+    haPlatform.ha.hassStates.set(fanEntity.entity_id, acceptedState);
+    await haPlatform.updateHandler(fanDevice.id, fanEntity.entity_id, fanState, acceptedState);
+    expect(device.getAttribute(FanControl.id, 'percentCurrent')).toBe(20);
+    expect(device.getAttribute(FanControl.id, 'percentSetting')).toBe(20);
+
+    // The same accepted value produces no new HA event: service completion must reconcile it.
+    await device.setAttribute(FanControl.id, 'percentSetting', 29);
+    vi.clearAllMocks();
+    await invokeSubscribeHandler(device, FanControl.id, 'percentSetting', 29, 20);
+    await flushAsync();
+    expect(callServiceSpy).toHaveBeenCalledTimes(1);
+    expect(callServiceSpy).toHaveBeenCalledWith('fan', 'turn_on', fanEntity.entity_id, { percentage: 20 });
+    expect(device.getAttribute(FanControl.id, 'percentSetting')).toBe(20);
+
+    // Preset speed telemetry must not overwrite an independent manual target.
+    await device.setAttribute(FanControl.id, 'percentSetting', 60);
+    const autoState = { ...acceptedState, attributes: { ...acceptedState.attributes, preset_mode: 'sleep', percentage: 40 } } as unknown as HassState;
+    await haPlatform.updateHandler(fanDevice.id, fanEntity.entity_id, acceptedState, autoState);
+    expect(device.getAttribute(FanControl.id, 'percentCurrent')).toBe(40);
+    expect(device.getAttribute(FanControl.id, 'percentSetting')).toBe(60);
+
+    // An older service completion cannot roll back a newer pending slider request.
+    let releaseFirst!: (result: { context: HassContext; response: unknown }) => void;
+    let releaseSecond!: (result: { context: HassContext; response: unknown }) => void;
+    callServiceSpy.mockImplementationOnce(
+      async () =>
+        new Promise((resolve) => {
+          releaseFirst = resolve;
+        }),
+    );
+    callServiceSpy.mockImplementationOnce(
+      async () =>
+        new Promise((resolve) => {
+          releaseSecond = resolve;
+        }),
+    );
+    await invokeSubscribeHandler(device, FanControl.id, 'percentSetting', 29, 20);
+    await invokeSubscribeHandler(device, FanControl.id, 'percentSetting', 79, 29);
+    await device.setAttribute(FanControl.id, 'percentSetting', 79);
+    releaseFirst({ context: {} as HassContext, response: undefined });
+    await flushAsync();
+    expect(device.getAttribute(FanControl.id, 'percentSetting')).toBe(79);
+    haPlatform.ha.hassStates.set(fanEntity.entity_id, { ...acceptedState, attributes: { ...acceptedState.attributes, percentage: 80 } });
+    releaseSecond({ context: {} as HassContext, response: undefined });
+    await flushAsync();
+    expect(device.getAttribute(FanControl.id, 'percentSetting')).toBe(80);
+
+    callServiceSpy.mockRejectedValueOnce(new Error('fan service failed'));
+    await device.setAttribute(FanControl.id, 'percentSetting', 79);
+    await invokeSubscribeHandler(device, FanControl.id, 'percentSetting', 79, 80);
+    await flushAsync();
+    expect(device.getAttribute(FanControl.id, 'percentSetting')).toBe(79);
+    // A subsequent valid HA event still restores the accepted setting after failure.
+    await haPlatform.updateHandler(fanDevice.id, fanEntity.entity_id, acceptedState, {
+      ...acceptedState,
+      attributes: { ...acceptedState.attributes, percentage: 80 },
+    });
+
+    for (const percentage of [null, undefined, Number.NaN, Infinity, -1, 101]) {
+      await haPlatform.updateHandler(fanDevice.id, fanEntity.entity_id, acceptedState, { ...acceptedState, attributes: { ...acceptedState.attributes, percentage } } as HassState);
+      expect(device.getAttribute(FanControl.id, 'percentSetting')).toBe(80);
+    }
+    await haPlatform.updateHandler(fanDevice.id, fanEntity.entity_id, acceptedState, { ...acceptedState, state: 'unavailable' });
+    expect(device.getAttribute(FanControl.id, 'percentSetting')).toBe(80);
+    await haPlatform.updateHandler(fanDevice.id, fanEntity.entity_id, acceptedState, { ...acceptedState, state: 'off' });
+    expect(device.getAttribute(FanControl.id, 'percentSetting')).toBe(0);
+
     // setDebug(false);
 
     // Clean the test environment
@@ -1648,7 +1756,7 @@ describe('Matterbridge ' + NAME, () => {
       ),
     );
     expect(addCommandHandlerSpy).toHaveBeenCalledTimes(0);
-    expect(subscribeAttributeSpy).toHaveBeenCalledTimes(4);
+    expect(subscribeAttributeSpy).toHaveBeenCalledTimes(5);
     expect(subscribeAttributeSpy).toHaveBeenCalledWith(FanControl.id, 'fanMode', expect.anything(), expect.anything());
     expect(subscribeAttributeSpy).toHaveBeenCalledWith(FanControl.id, 'percentSetting', expect.anything(), expect.anything());
     expect(subscribeAttributeSpy).toHaveBeenCalledWith(FanControl.id, 'airflowDirection', expect.anything(), expect.anything());
@@ -1682,6 +1790,12 @@ describe('Matterbridge ' + NAME, () => {
     expect(setAttributeSpy).toHaveBeenCalledWith(FanControl.id, 'percentCurrent', 50, expect.anything());
     expect(setAttributeSpy).toHaveBeenCalledWith(FanControl.id, 'airflowDirection', FanControl.AirflowDirection.Forward, expect.anything());
     expect(setAttributeSpy).toHaveBeenCalledWith(FanControl.id, 'rockSetting', { rockLeftRight: false, rockUpDown: false, rockRound: true }, expect.anything());
+
+    const automaticState = { ...fanState, attributes: { ...fanState.attributes, preset_mode: 'auto', percentage: 40 } } as unknown as HassState;
+    await haPlatform.updateHandler(fanDevice.id, fanEntity.entity_id, fanState, automaticState);
+    expect(device.getAttribute(FanControl.id, 'fanMode')).toBe(FanControl.FanMode.Auto);
+    expect(device.getAttribute(FanControl.id, 'percentCurrent')).toBe(40);
+    expect(device.getAttribute(FanControl.id, 'percentSetting')).toBeNull();
 
     vi.clearAllMocks();
     console.warn(`Updating state of entity ${CYAN}${fanEntity.entity_id}${db}...`);
@@ -1742,6 +1856,14 @@ describe('Matterbridge ' + NAME, () => {
       LogLevel.INFO,
       expect.stringContaining(`Subscribed attribute ${hk}FanControl${db}:${hk}rockSetting${db} on endpoint ${or}${device.maybeId}${db}:${or}${device.maybeNumber}${db} changed`),
     );
+
+    callServiceSpy.mockClear();
+    await invokeSubscribeHandler(device, FanControl.id, 'windSetting', { sleepWind: true, naturalWind: false }, { sleepWind: false, naturalWind: false });
+    expect(callServiceSpy).toHaveBeenCalledWith('fan', 'set_preset_mode', fanEntity.entity_id, { preset_mode: 'sleep_wind' });
+    callServiceSpy.mockClear();
+    await invokeSubscribeHandler(device, FanControl.id, 'windSetting', { sleepWind: false, naturalWind: false }, { sleepWind: true, naturalWind: false });
+    expect(callServiceSpy).toHaveBeenCalledWith('fan', 'set_percentage', fanEntity.entity_id, { percentage: 50 });
+    await expect(device.setStateOf(device.behaviors.supported.fanControl, { windSetting: { sleepWind: true, naturalWind: true } })).rejects.toThrow();
 
     // setDebug(false);
 
@@ -1873,6 +1995,24 @@ describe('Matterbridge ' + NAME, () => {
       target_temp_high: 28,
       target_temp_low: 10,
     });
+
+    climateDeviceEntityState.attributes.target_temp_step = 1;
+    vi.clearAllMocks();
+    await invokeSubscribeHandler(device, Thermostat.id, 'occupiedCoolingSetpoint', 2750, 3000);
+    expect(callServiceSpy).toHaveBeenCalledWith('climate', 'set_temperature', climateDeviceEntity.entity_id, { target_temp_high: 28, target_temp_low: 10 });
+    expect(setAttributeSpy).toHaveBeenCalledWith(Thermostat.id, 'occupiedCoolingSetpoint', 2800, expect.anything());
+
+    const updated = structuredClone(climateDeviceEntityState);
+    updated.state = 'cool';
+    updated.attributes.temperature = 25;
+    vi.clearAllMocks();
+    await haPlatform.updateHandler(climateDevice.id, climateDeviceEntity.entity_id, climateDeviceEntityState, updated);
+    expect(device.getAttribute(Thermostat.id, 'occupiedCoolingSetpoint')).toBe(2500);
+    expect(callServiceSpy).not.toHaveBeenCalled();
+    updated.state = 'off';
+    updated.attributes.temperature = 24;
+    await haPlatform.updateHandler(climateDevice.id, climateDeviceEntity.entity_id, climateDeviceEntityState, updated);
+    expect(device.getAttribute(Thermostat.id, 'occupiedCoolingSetpoint')).toBe(2400);
 
     // Clean the test environment
     await cleanup();
@@ -2453,6 +2593,261 @@ describe('Matterbridge ' + NAME, () => {
     await cleanup();
 
     // setDebug(false);
+  });
+
+  it.each([0, 1, 2, 8, 15])('advertises Fan 0x002B with only supported circulator features (HA mask %i)', async (features) => {
+    const entity = {
+      entity_id: 'fan.circulator',
+      id: 'circulator',
+      device_id: null,
+      disabled_by: null,
+      labels: [],
+      original_name: 'Circulator',
+    } as unknown as HassEntity;
+    const state = {
+      entity_id: entity.entity_id,
+      state: 'on',
+      attributes: {
+        supported_features: features,
+        percentage: 50,
+        oscillating: false,
+        direction: 'forward',
+        preset_mode: 'normal',
+        preset_modes: ['normal', 'auto', 'sleep_wind', 'natural_wind'],
+      },
+    } as unknown as HassState;
+    haPlatform.ha.hassEntities.set(entity.entity_id, entity);
+    haPlatform.ha.hassStates.set(entity.entity_id, state);
+    try {
+      await haPlatform.onStart('Circulator');
+      expect(haPlatform.failedEntities).toBe(0);
+      const root = haPlatform.matterbridgeDevices.get(entity.entity_id) as MatterbridgeEndpoint;
+      expect(root.getAttribute(Descriptor, 'deviceTypeList')).toEqual(expect.arrayContaining([expect.objectContaining({ deviceType: 0x002b, revision: 4 })]));
+      expect(root.getAttribute(Descriptor, 'serverList')).toEqual(expect.arrayContaining([Identify.id, Groups.id, FanControl.id]));
+      expect(root.getAttribute(FanControl.id, 'featureMap')).toMatchObject({
+        step: [1, 15].includes(features),
+        rocking: [2, 15].includes(features),
+        airflowDirection: features === 15,
+        auto: [8, 15].includes(features),
+        wind: [8, 15].includes(features),
+        multiSpeed: false,
+      });
+      expect(root.hasAttributeServer(FanControl, 'rockSetting')).toBe([2, 15].includes(features));
+      expect(root.hasAttributeServer(FanControl, 'airflowDirection')).toBe(features === 15);
+      expect(root.hasAttributeServer(FanControl, 'windSetting')).toBe([8, 15].includes(features));
+      expect(loggerErrorSpy).not.toHaveBeenCalled();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it.each([
+    ['native-cold-mist', 'humidifier', 0, 1],
+    ['native-warm-mist', 'humidifier', 0, 2],
+    ['native-cold-mist', 'dehumidifier', 1, undefined],
+    ['native-warm-mist', 'dehumidifier', 1, undefined],
+  ] as const)('implements provisional %s %s descriptors and Humidistat commands', async (selection, deviceClass, expectedMode, mist) => {
+    const previous = haPlatform.config.humidifierDeviceType;
+    haPlatform.config.humidifierDeviceType = selection;
+    const entity = {
+      entity_id: 'humidifier.native',
+      id: 'native-humidity',
+      device_id: null,
+      disabled_by: null,
+      labels: [],
+      original_name: 'Native humidity',
+    } as unknown as HassEntity;
+    const state = {
+      entity_id: entity.entity_id,
+      state: 'on',
+      attributes: {
+        device_class: deviceClass,
+        humidity: 45,
+        min_humidity: 30,
+        max_humidity: 70,
+        target_humidity_step: 5,
+        current_humidity: 48,
+        action: deviceClass === 'humidifier' ? 'humidifying' : 'drying',
+      },
+    } as unknown as HassState;
+    haPlatform.ha.hassEntities.set(entity.entity_id, entity);
+    haPlatform.ha.hassStates.set(entity.entity_id, state);
+    try {
+      await haPlatform.onStart('Native humidity');
+      expect(haPlatform.failedEntities).toBe(0);
+      await haPlatform.onConfigure();
+      const root = haPlatform.matterbridgeDevices.get(entity.entity_id) as MatterbridgeEndpoint;
+      expect(root).toBeDefined();
+      const types = root.getAttribute(Descriptor, 'deviceTypeList');
+      expect(types).toEqual(expect.arrayContaining([expect.objectContaining({ deviceType: 0x007d, revision: 1 })]));
+      expect(types?.some((type) => type.deviceType === 0x010a)).toBe(false);
+      expect(root.getAttribute(Descriptor, 'serverList')).toEqual(expect.arrayContaining([Identify.id, OnOff.id, Humidistat.id]));
+      expect(root.getAttribute(OnOff.id, 'featureMap')).toMatchObject({ deadFrontBehavior: true, lighting: false });
+      expect(root.getAttribute(Humidistat.id, 'mode')).toBe(expectedMode);
+      expect(root.getAttribute(Humidistat.id, 'systemState')).toBe(expectedMode);
+      expect(root.getAttribute(Humidistat.id, 'userSetpoint')).toBe(45);
+      expect(root.getAttribute(Humidistat.id, 'featureMap')).toMatchObject({ sensor: true, humidifier: expectedMode === 0, dehumidifier: expectedMode === 1 });
+      expect(root.getAttribute(Humidistat.id, 'featureMap')).toMatchObject({ coldMist: mist === 1, warmMist: mist === 2 });
+      expect(root.hasAttributeServer(Humidistat.id, 'mistType')).toBe(mist !== undefined);
+      expect(mist === undefined ? undefined : root.getAttribute(Humidistat.id, 'mistType')).toBe(mist);
+      expect(root.getChildEndpointByOriginalId(`${entity.entity_id}.humidity`)).toBeUndefined();
+      callServiceSpy.mockClear();
+      await invokeHumiditySettings(root, { userSetpoint: 50 });
+      expect(callServiceSpy).toHaveBeenCalledTimes(1);
+      expect(callServiceSpy).toHaveBeenCalledWith('humidifier', 'set_humidity', entity.entity_id, { humidity: 50 });
+      expect(root.getAttribute(Humidistat.id, 'userSetpoint')).toBe(50);
+      expect(root.getAttribute(Humidistat.id, 'clusterRevision')).toBe(1);
+      expect(root.getAttribute(Humidistat.id, 'acceptedCommandList')).toEqual([0]);
+      expect(root.getAttribute(Humidistat.id, 'attributeList')).toEqual(expect.arrayContaining([0, 1, 2, 3, 4, 5, 6]));
+      callServiceSpy.mockClear();
+      await writeHumidityTarget(root, 55);
+      expect(callServiceSpy).toHaveBeenCalledTimes(1);
+      expect(callServiceSpy).toHaveBeenCalledWith('humidifier', 'set_humidity', entity.entity_id, { humidity: 55 });
+      expect(root.getAttribute(Humidistat.id, 'userSetpoint')).toBe(55);
+      callServiceSpy.mockRejectedValueOnce(new Error('Write service failed'));
+      await expect(writeHumidityTarget(root, 60)).rejects.toThrow('Write service failed');
+      expect(root.getAttribute(Humidistat.id, 'userSetpoint')).toBe(55);
+      await invokeHumiditySettings(root, { userSetpoint: 50 });
+      await expect(root.setStateOf(root.behaviors.supported.humidistat, { userSetpoint: 46 })).rejects.toThrow();
+      callServiceSpy.mockRejectedValueOnce(new Error('HA service failed'));
+      await expect(invokeHumiditySettings(root, { userSetpoint: 55 })).rejects.toThrow('HA service failed');
+      expect(root.getAttribute(Humidistat.id, 'userSetpoint')).toBe(50);
+      for (const request of [{ userSetpoint: 71 }, { userSetpoint: 46 }, { mode: 2 }, { sleep: true }, { continuous: true }]) {
+        await expect(invokeHumiditySettings(root, request)).rejects.toThrow();
+        expect(root.getAttribute(Humidistat.id, 'userSetpoint')).toBe(50);
+      }
+      callServiceSpy.mockClear();
+      haPlatform.ha.hassStates.set(entity.entity_id, { ...state, state: 'unavailable' });
+      await expect(invokeHumiditySettings(root, { userSetpoint: 50 })).rejects.toThrow('unavailable');
+      haPlatform.ha.hassStates.set(entity.entity_id, { ...state, attributes: { ...state.attributes, max_humidity: 50 } });
+      await expect(invokeHumiditySettings(root, { userSetpoint: 55 })).rejects.toThrow('limits changed');
+      expect(callServiceSpy).not.toHaveBeenCalled();
+      haPlatform.ha.hassStates.set(entity.entity_id, state);
+      callServiceSpy.mockClear();
+      await haPlatform.updateHandler(null, entity.entity_id, state, { ...state, state: 'off', attributes: { ...state.attributes, humidity: 40 } });
+      expect(root.getAttribute(Humidistat.id, 'userSetpoint')).toBe(40);
+      expect(root.getAttribute(Humidistat.id, 'systemState')).toBe(3);
+      expect(callServiceSpy).not.toHaveBeenCalled();
+      expect(loggerErrorSpy).not.toHaveBeenCalled();
+    } finally {
+      haPlatform.config.humidifierDeviceType = previous;
+      await cleanup();
+    }
+  });
+
+  it.each(['Merge', 'Matter'] as const)('registers climate presets and custom fan modes with %s endpoints', async (strategy) => {
+    const previous = haPlatform.config.controllerStrategy;
+    haPlatform.config.controllerStrategy = strategy;
+    const entity = {
+      entity_id: 'climate.environment',
+      id: 'environment-climate',
+      device_id: null,
+      disabled_by: null,
+      labels: [],
+      original_name: 'Room Climate',
+    } as unknown as HassEntity;
+    const state = {
+      entity_id: entity.entity_id,
+      state: 'heat',
+      attributes: {
+        friendly_name: 'Room Climate',
+        hvac_modes: ['heat'],
+        current_temperature: 22,
+        temperature: 24,
+        preset_modes: ['eco', 'comfort'],
+        preset_mode: 'eco',
+        fan_modes: ['Quiet', 'Turbo'],
+        fan_mode: 'Quiet',
+      },
+    } as unknown as HassState;
+    haPlatform.ha.hassEntities.set(entity.entity_id, entity);
+    haPlatform.ha.hassStates.set(entity.entity_id, state);
+    try {
+      await haPlatform.onStart('Climate controls');
+      await haPlatform.onConfigure();
+      const root = haPlatform.matterbridgeDevices.get(entity.entity_id) as MatterbridgeEndpoint;
+      expect(root).toBeDefined();
+      const preset = root.getChildEndpointByOriginalId(`${entity.entity_id}.preset_mode`) as MatterbridgeEndpoint;
+      const fanMode = root.getChildEndpointByOriginalId(`${entity.entity_id}.fan_mode`) as MatterbridgeEndpoint;
+      expect(preset.getAttribute(ModeSelect, 'supportedModes')?.map((mode) => mode.label)).toEqual(['eco', 'comfort']);
+      await invokeBehaviorCommand(preset, 'modeSelect', 'changeToMode', { newMode: 2 });
+      await invokeBehaviorCommand(fanMode, 'modeSelect', 'changeToMode', { newMode: 2 });
+      expect(callServiceSpy).toHaveBeenCalledWith('climate', 'set_preset_mode', entity.entity_id, { preset_mode: 'comfort' });
+      expect(callServiceSpy).toHaveBeenCalledWith('climate', 'set_fan_mode', entity.entity_id, { fan_mode: 'Turbo' });
+      await haPlatform.updateHandler(null, entity.entity_id, state, { ...state, attributes: { ...state.attributes, preset_mode: 'comfort', fan_mode: 'Turbo' } });
+      expect(preset.getAttribute(ModeSelect, 'currentMode')).toBe(2);
+      expect(fanMode.getAttribute(ModeSelect, 'currentMode')).toBe(2);
+      expect(loggerErrorSpy).not.toHaveBeenCalled();
+    } finally {
+      haPlatform.config.controllerStrategy = previous;
+      await cleanup();
+    }
+  });
+
+  it.each([
+    ['Merge', 'humidifier'],
+    ['Merge', 'dehumidifier'],
+    ['Matter', 'humidifier'],
+    ['Matter', 'dehumidifier'],
+  ] as const)('registers %s %s with power, humidity, mode and target controls', async (strategy, deviceClass) => {
+    const previous = haPlatform.config.controllerStrategy;
+    haPlatform.config.controllerStrategy = strategy;
+    const entity = {
+      entity_id: 'humidifier.environment',
+      id: 'environment-humidity',
+      device_id: null,
+      disabled_by: null,
+      labels: [],
+      original_name: 'Room Humidity',
+    } as unknown as HassEntity;
+    const state = {
+      entity_id: entity.entity_id,
+      state: 'on',
+      attributes: {
+        friendly_name: 'Room Humidity',
+        device_class: deviceClass,
+        current_humidity: 52.5,
+        humidity: 45,
+        min_humidity: 40,
+        max_humidity: 50,
+        target_humidity_step: 5,
+        available_modes: ['auto', 'sleep'],
+        mode: 'auto',
+      },
+    } as unknown as HassState;
+    haPlatform.ha.hassEntities.set(entity.entity_id, entity);
+    haPlatform.ha.hassStates.set(entity.entity_id, state);
+    try {
+      await haPlatform.onStart('Humidity controls');
+      await haPlatform.onConfigure();
+      const root = haPlatform.matterbridgeDevices.get(entity.entity_id) as MatterbridgeEndpoint;
+      expect(root).toBeDefined();
+      const power = root.getChildEndpointByOriginalId(entity.entity_id) ?? root;
+      const mode = root.getChildEndpointByOriginalId(`${entity.entity_id}.mode`) as MatterbridgeEndpoint;
+      const target = root.getChildEndpointByOriginalId(`${entity.entity_id}.humidity`) as MatterbridgeEndpoint;
+      expect(power.getAttribute(OnOff, 'onOff')).toBe(true);
+      expect(power.getAttribute(RelativeHumidityMeasurement, 'measuredValue')).toBe(5250);
+      expect(target.getAttribute(ModeSelect, 'currentMode')).toBe(2);
+      await invokeBehaviorCommand(power, 'onOff', 'off');
+      await invokeBehaviorCommand(mode, 'modeSelect', 'changeToMode', { newMode: 2 });
+      await invokeBehaviorCommand(target, 'modeSelect', 'changeToMode', { newMode: 3 });
+      expect(callServiceSpy).toHaveBeenCalledWith('humidifier', 'turn_off', entity.entity_id, undefined);
+      expect(callServiceSpy).toHaveBeenCalledWith('humidifier', 'set_mode', entity.entity_id, { mode: 'sleep' });
+      expect(callServiceSpy).toHaveBeenCalledWith('humidifier', 'set_humidity', entity.entity_id, { humidity: 50 });
+      await haPlatform.updateHandler(null, entity.entity_id, state, {
+        ...state,
+        state: 'off',
+        attributes: { ...state.attributes, humidity: 40, mode: 'sleep', current_humidity: 48 },
+      });
+      expect(power.getAttribute(OnOff, 'onOff')).toBe(false);
+      expect(power.getAttribute(RelativeHumidityMeasurement, 'measuredValue')).toBe(4800);
+      expect(target.getAttribute(ModeSelect, 'currentMode')).toBe(1);
+      expect(mode.getAttribute(ModeSelect, 'currentMode')).toBe(2);
+      expect(loggerErrorSpy).not.toHaveBeenCalled();
+    } finally {
+      haPlatform.config.controllerStrategy = previous;
+      await cleanup();
+    }
   });
 
   it('should call onStart and register an individual entity switch Switch template device', async () => {
@@ -3787,7 +4182,7 @@ describe('Matterbridge ' + NAME, () => {
     expect(haPlatform.matterbridgeDevices.get(humidityEntity.entity_id)?.getAttribute(RelativeHumidityMeasurement.id, 'measuredValue')).toBe(5630); // 56.3% *100
     expect(haPlatform.matterbridgeDevices.get(pressureEntity.entity_id)?.getAttribute(PressureMeasurement.id, 'measuredValue')).toBe(1013);
     expect(haPlatform.matterbridgeDevices.get(atmosphericPressureEntity.entity_id)?.getAttribute(PressureMeasurement.id, 'measuredValue')).toBe(1013);
-    expect(haPlatform.matterbridgeDevices.get(illuminanceEntity.entity_id)?.getAttribute(IlluminanceMeasurement.id, 'measuredValue')).toBe(26990);
+    expect(haPlatform.matterbridgeDevices.get(illuminanceEntity.entity_id)?.getAttribute(IlluminanceMeasurement.id, 'measuredValue')).toBe(26991);
     // PowerEnergy block
     expect(haPlatform.matterbridgeDevices.get(energyEntity.entity_id)?.getAttribute(ElectricalEnergyMeasurement.id, 'cumulativeEnergyImported')).toEqual({
       energy: 12340000,
@@ -3975,7 +4370,7 @@ describe('Matterbridge ' + NAME, () => {
     expect(haPlatform.matterbridgeDevices.get(humidityEntity.entity_id)?.getAttribute(RelativeHumidityMeasurement.id, 'measuredValue')).toBe(5630); // 56.3% *100
     expect(haPlatform.matterbridgeDevices.get(pressureEntity.entity_id)?.getAttribute(PressureMeasurement.id, 'measuredValue')).toBe(1013);
     expect(haPlatform.matterbridgeDevices.get(atmosphericPressureEntity.entity_id)?.getAttribute(PressureMeasurement.id, 'measuredValue')).toBe(1013);
-    expect(haPlatform.matterbridgeDevices.get(illuminanceEntity.entity_id)?.getAttribute(IlluminanceMeasurement.id, 'measuredValue')).toBe(26990);
+    expect(haPlatform.matterbridgeDevices.get(illuminanceEntity.entity_id)?.getAttribute(IlluminanceMeasurement.id, 'measuredValue')).toBe(26991);
     // PowerEnergy block
     expect(haPlatform.matterbridgeDevices.get(energyEntity.entity_id)?.getAttribute(ElectricalEnergyMeasurement.id, 'cumulativeEnergyImported')).toEqual({
       energy: 12340000,
@@ -4597,7 +4992,7 @@ const fanCompleteState = {
     preset_modes: ['auto', 'low', 'medium', 'high'],
     preset_mode: 'auto',
     direction: 'forward',
-    oscillate: true,
+    oscillating: true,
   },
 } as unknown as HassState;
 

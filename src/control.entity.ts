@@ -27,9 +27,9 @@
 import { colorTemperatureLight, dimmableLight, extendedColorLight, type MatterbridgeEndpoint, type PrimitiveTypes } from 'matterbridge';
 import { CYAN, db, debugStringify } from 'matterbridge/logger';
 import type { ActionContext } from 'matterbridge/matter';
-import { LevelControl } from 'matterbridge/matter/clusters';
+import { LevelControl, type ServiceArea } from 'matterbridge/matter/clusters';
 import { type ClusterId, getClusterNameById } from 'matterbridge/matter/types';
-import { isValidArray, isValidBoolean, isValidNumber, isValidString } from 'matterbridge/utils';
+import { isValidArray, isValidNumber, isValidString } from 'matterbridge/utils';
 
 import {
   convertHAFanPresetModesToMatter,
@@ -42,10 +42,13 @@ import {
   roundTo,
   temp,
 } from './converters.js';
-import { entityHasLabel, getDomain, getEntityName } from './helpers.js';
+import { addEnvironmentControls } from './environmentControls.js';
+import { addFanControl } from './fanControl.js';
+import { entityHasLabel, getDomain, getEntityName, getSortedHassAreas, hassAreaIdToMatterAreaId, truncateUtf8 } from './helpers.js';
 import {
   ClimateEntityFeature,
   ColorMode,
+  CoverEntityFeature,
   DEFAULT_MAX_KELVIN,
   DEFAULT_MAX_TEMP,
   DEFAULT_MIN_KELVIN,
@@ -57,11 +60,12 @@ import {
   HVACMode,
   LightEntityFeature,
   MediaPlayerEntityFeature,
-  MediaPlayerService,
   UnitOfTemperature,
   VacuumEntityFeature,
   ValveEntityFeature,
 } from './homeAssistant.js';
+import { addNativeHumidifier, getNativeHumidityConfig, humidityConditioner } from './humidistat.js';
+import { registerMediaControls } from './mediaControls.js';
 import type { HomeAssistantPlatform } from './module.js';
 import type { MutableDevice } from './mutableDevice.js';
 
@@ -104,6 +108,10 @@ export function addControlEntity(
 ): string | undefined {
   let endpointName: string | undefined = undefined;
   const domain = getDomain(entity.entity_id);
+  let hasEffects = false;
+  let hasServiceArea = false;
+  let hasTilt = false;
+  let hasVolume = false;
 
   // Use stateCache for state and attributes values to avoid issues with unavailable entities and to have the last valid state and attributes for the entity.
   if (state.state === 'unavailable') {
@@ -116,6 +124,9 @@ export function addControlEntity(
       platform.log.warn(`Entity ${CYAN}${entity.entity_id}${db} is unavailable and no cached state found`);
     }
   }
+  const nativeHumidity = domain === 'humidifier' ? getNativeHumidityConfig(state, platform.config.humidifierDeviceType) : undefined;
+  if (domain === 'humidifier' && platform.config.humidifierDeviceType?.startsWith('native-') && !nativeHumidity)
+    platform.log.warn(`Using compatible humidity type for ${entity.entity_id}: native mode requires a device class and valid integer humidity limits, step and target.`);
   // Add device type and clusterIds for supported domain of the current entity.
   hassDomainConverter
     .filter((d) => d.domain === domain && d.withAttribute === undefined)
@@ -123,7 +134,7 @@ export function addControlEntity(
       if (!hassDomain.deviceType || !hassDomain.clusterId) return;
       endpointName = entity.entity_id;
       platform.log.debug(`+ ${domain} device ${CYAN}${hassDomain.deviceType.name}${db} cluster ${CYAN}${getClusterNameById(hassDomain.clusterId)}${db}`);
-      mutableDevice.addDeviceTypes(endpointName, hassDomain.deviceType);
+      mutableDevice.addDeviceTypes(endpointName, nativeHumidity ? humidityConditioner : hassDomain.deviceType);
       mutableDevice.addClusterServerIds(endpointName, hassDomain.clusterId);
       if (state.attributes && isValidString(state.attributes['friendly_name'])) mutableDevice.setFriendlyName(endpointName, state.attributes['friendly_name']);
     });
@@ -144,6 +155,8 @@ export function addControlEntity(
         mutableDevice.addClusterServerIds(endpointName, hassDomain.clusterId);
       });
   }
+
+  if (nativeHumidity) addNativeHumidifier(mutableDevice, endpointName, nativeHumidity, platform);
 
   // Real values will be updated by the configure with the Home Assistant states. Here we need the features and fixed attributes to be set.
 
@@ -172,6 +185,15 @@ export function addControlEntity(
     } else {
       mutableDevice.addClusterServerColorControl(endpointName, minMireds, maxMireds);
     }
+  }
+
+  if (
+    domain === 'light' &&
+    isValidArray(state.attributes['effect_list'], 1, 255) &&
+    state.attributes.effect_list.every((effect) => isValidString(effect, 1) && Buffer.byteLength(effect, 'utf8') <= 64)
+  ) {
+    mutableDevice.addSelect(endpointName, 'Effect', state.attributes['effect_list']);
+    hasEffects = true;
   }
 
   // Configure the Thermostat cluster default values and features.
@@ -209,29 +231,19 @@ export function addControlEntity(
     } else {
       platform.log.debug(`= thermostat device ${CYAN}${entity.entity_id}${db} state ${CYAN}${state.attributes['hvac_modes']}${db} default temperature: ${CYAN}${temperature}${db}`);
     }
+    if (isValidArray(state.attributes['fan_modes'], 1) && state.attributes['fan_modes'].some((mode) => ['low', 'medium', 'high', 'auto'].includes(mode))) {
+      mutableDevice.addClusterServerDefaultFanControl(endpointName, convertHAFanPresetModeToMatter(state.attributes['fan_mode']), convertHAFanPresetModesToMatter(state.attributes['fan_modes']));
+    }
   }
 
   /*
    * Configure the FanControl cluster default values and features.
    */
-  // TODO Add wind support in converters
   // oxfmt-ignore
   if (domain === 'fan') {
     platform.log.debug(`= fan device ${CYAN}${entity.entity_id}${db} preset_modes: ${CYAN}${state.attributes['preset_modes']}${db} direction: ${CYAN}${state.attributes['direction']}${db} oscillating: ${CYAN}${state.attributes['oscillating']}${db}`);
     platform.log.debug(`# fan device ${CYAN}${entity.entity_id}${db} supported_features: ${CYAN}${getFeatureNames(FanEntityFeature, state.attributes.supported_features)}${db}`);
-    if (isValidString(state.attributes['direction']) || isValidBoolean(state.attributes['oscillating']) || (isValidArray(state.attributes['preset_modes']) && (state.attributes['preset_modes'].includes('natural_wind') || state.attributes['preset_modes'].includes('sleep_wind')))) {
-      /*
-       * Create a FanControl cluster with the following features: [FanControl.Feature.Auto], FanControl.Feature.Step, FanControl.Feature.Rocking, FanControl.Feature.AirflowDirection, FanControl.Feature.Wind
-       * fanModeSequence = FanControl.FanModeSequence.OffLowMedHighAuto
-       */
-      mutableDevice.addClusterServerCompleteFanControl(endpointName, convertHAFanPresetModeToMatter(state.attributes['preset_mode']), convertHAFanPresetModesToMatter(state.attributes['preset_modes']));
-    } else {
-      /*
-       * Create a FanControl cluster with the following features: [FanControl.Feature.Auto], FanControl.Feature.Step
-       * fanModeSequence = FanControl.FanModeSequence.OffLowMedHighAuto
-       */
-      mutableDevice.addClusterServerDefaultFanControl(endpointName, convertHAFanPresetModeToMatter(state.attributes['preset_mode']), convertHAFanPresetModesToMatter(state.attributes['preset_modes']));
-    }
+    addFanControl(mutableDevice, endpointName, state);
   }
 
   // Configure the vacuum.
@@ -241,6 +253,49 @@ export function addControlEntity(
       `# vacuum device ${CYAN}${entity.entity_id}${db} supported_features: ${CYAN}${getFeatureNames(VacuumEntityFeature, state.attributes.supported_features)}${db}`,
     );
     mutableDevice.addVacuum(endpointName);
+    // HA exposes public room cleaning through vacuum.clean_area using area-registry IDs.
+    // Preserve the AreaId across restarts so Matter controllers retain their selections.
+    if (
+      isValidNumber(state.attributes['supported_features']) &&
+      getFeatureNames(VacuumEntityFeature, state.attributes.supported_features).includes('CLEAN_AREA') &&
+      platform.ha.hassAreas.size > 0
+    ) {
+      const supportedAreas: ServiceArea.Area[] = getSortedHassAreas(platform.ha).map((area) => ({
+        areaId: hassAreaIdToMatterAreaId(area.area_id),
+        mapId: null,
+        areaInfo: {
+          locationInfo: {
+            locationName: truncateUtf8(area.name, 32),
+            floorNumber: null,
+            areaType: null,
+          },
+          landmarkInfo: null,
+        },
+      }));
+      const areaNames = supportedAreas.map((area) => area.areaInfo.locationInfo?.locationName);
+      if (
+        supportedAreas.length <= 255 &&
+        areaNames.every((name) => !!name) &&
+        new Set(areaNames).size === supportedAreas.length &&
+        new Set(supportedAreas.map((area) => area.areaId)).size === supportedAreas.length
+      ) {
+        mutableDevice.addClusterServerServiceArea(endpointName, supportedAreas);
+        hasServiceArea = true;
+      } else {
+        platform.log.warn(`Skipping ServiceArea for ${entity.entity_id}: too many areas or duplicate/empty Matter area identifiers or names`);
+      }
+    }
+  }
+
+  // Configure covers supporting both lift and tilt positioning.
+  if (
+    domain === 'cover' &&
+    isValidNumber(state.attributes.supported_features) &&
+    getFeatureNames(CoverEntityFeature, state.attributes.supported_features).includes('SET_POSITION') &&
+    getFeatureNames(CoverEntityFeature, state.attributes.supported_features).includes('SET_TILT_POSITION')
+  ) {
+    mutableDevice.addLiftTiltCover(endpointName);
+    hasTilt = true;
   }
 
   // Configure the valve.
@@ -287,43 +342,32 @@ export function addControlEntity(
     mutableDevice.addOnOff(endpointName, true);
     mutableDevice.addBasicVideoPlayer(endpointName);
     mutableDevice.addKeypadInput(endpointName);
+    // LevelControl is the Matter volume-control cluster for media endpoints.
+    if (getFeatureNames(MediaPlayerEntityFeature, state.attributes.supported_features).includes('VOLUME_SET')) {
+      mutableDevice.addClusterServerIds(endpointName, LevelControl.id);
+      hasVolume = true;
+    }
     if (entityHasLabel(platform, entity, platform.config.virtualControlLabel)) {
-      const featuresServices: { feature: MediaPlayerEntityFeature; service: MediaPlayerService; controlName: string }[] = [
-        { feature: MediaPlayerEntityFeature.TURN_ON, service: MediaPlayerService.TURN_ON, controlName: 'Turn ON' },
-        { feature: MediaPlayerEntityFeature.TURN_OFF, service: MediaPlayerService.TURN_OFF, controlName: 'Turn OFF' },
-        { feature: MediaPlayerEntityFeature.PLAY, service: MediaPlayerService.MEDIA_PLAY, controlName: 'Play' },
-        { feature: MediaPlayerEntityFeature.PAUSE, service: MediaPlayerService.MEDIA_PAUSE, controlName: 'Pause' },
-        { feature: MediaPlayerEntityFeature.STOP, service: MediaPlayerService.MEDIA_STOP, controlName: 'Stop' },
-        { feature: MediaPlayerEntityFeature.VOLUME_MUTE, service: MediaPlayerService.VOLUME_MUTE, controlName: 'Mute' },
-        { feature: MediaPlayerEntityFeature.VOLUME_STEP, service: MediaPlayerService.VOLUME_DOWN, controlName: 'Volume Down' },
-        { feature: MediaPlayerEntityFeature.VOLUME_STEP, service: MediaPlayerService.VOLUME_UP, controlName: 'Volume Up' },
-        { feature: MediaPlayerEntityFeature.PREVIOUS_TRACK, service: MediaPlayerService.MEDIA_PREVIOUS_TRACK, controlName: 'Previous Track' },
-        { feature: MediaPlayerEntityFeature.NEXT_TRACK, service: MediaPlayerService.MEDIA_NEXT_TRACK, controlName: 'Next Track' },
-      ];
-      featuresServices.forEach(({ feature, service, controlName }) => {
-        // oxlint-disable-next-line no-bitwise
-        if (state.attributes['supported_features'] && state.attributes['supported_features'] & feature) {
-          platform.log.debug(`***Add media_player device ${CYAN}${entity.entity_id}${db} virtual control:${CYAN}${controlName}${db}`);
-          void platform
-            // oxlint-disable-next-line typescript/require-await
-            .registerVirtualDevice(`${controlName} ${getEntityName(platform, entity)}`, 'mounted_switch', async () => {
-              platform.ha.callService('media_player', service, entity.entity_id).catch((error: unknown) => {
-                platform.log.error(`Failed to call ${controlName.toLowerCase()} service for ${CYAN}${entity.entity_id}${db}: ${error}`);
-              });
-            })
-            // oxlint-disable-next-line no-empty-function
-            .catch(/* istanbul ignore next */ () => {});
-        }
+      void registerMediaControls(platform, entity, state).catch((error: unknown) => {
+        platform.log.error(`Failed to register media controls for ${entity.entity_id}: ${String(error)}`);
       });
     }
   }
 
+  if (domain === 'climate' || domain === 'humidifier') {
+    platform.environmentControls.set(entity.entity_id, addEnvironmentControls(platform, mutableDevice, entity, state, !nativeHumidity));
+  }
+
   // Add command handlers
   for (const hassCommand of hassCommandConverter.filter((c) => c.domain === domain)) {
+    if (domain === 'light' && hassCommand.command === 'changeToMode' && !hasEffects) continue;
+    if (domain === 'vacuum' && hassCommand.command === 'selectAreas' && !hasServiceArea) continue;
+    if (domain === 'cover' && hassCommand.command === 'goToTiltPercentage' && !hasTilt) continue;
+    if (domain === 'media_player' && hassCommand.service === 'volume_set' && !hasVolume) continue;
     platform.log.debug(`- command: ${CYAN}${hassCommand.command}${db}`);
-    mutableDevice.addCommandHandler(entity.entity_id, hassCommand.command, (data, endpointName, command) => {
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion no-empty-function
-      void commandHandler(data as any, endpointName, command).catch(/* istanbul ignore next */ () => {});
+    mutableDevice.addCommandHandler(entity.entity_id, hassCommand.command, async (data, endpointName, command) => {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+      await commandHandler(data as any, endpointName, command);
     });
   }
 

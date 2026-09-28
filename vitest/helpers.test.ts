@@ -14,6 +14,8 @@ import {
   generateState,
   getDomain,
   getEntityName,
+  getSortedHassAreas,
+  hassAreaIdToMatterAreaId,
   getName,
   isDeviceEntity,
   isDisabled,
@@ -22,6 +24,7 @@ import {
   isSplitEntity,
   satisfiesAreaFilter,
   satisfiesLabelFilter,
+  truncateUtf8,
 } from '../src/helpers.js';
 import type { HassArea, HassDevice, HassEntity, HassLabel, HassState, HomeAssistant } from '../src/homeAssistant.js';
 import type { HomeAssistantPlatform } from '../src/module.js';
@@ -37,6 +40,29 @@ function createHomeAssistant(): HomeAssistant {
 }
 
 describe('HassPlatform helpers', () => {
+  it.each([
+    ['Living room', 6, 'Living'],
+    ['가나다', 8, '가나'],
+    ['ab😀z', 5, 'ab'],
+    ['ab😀z', 6, 'ab😀'],
+    ['가'.repeat(11), 32, '가'.repeat(10)],
+    ['text', 0, ''],
+    ['text', -1, ''],
+    ['text', Infinity, ''],
+    ['text', 1.5, ''],
+  ])('truncates %s to %s UTF-8 bytes without skipping characters', (value, limit, expected) => {
+    expect(truncateUtf8(value, limit)).toBe(expected);
+  });
+  it('returns sorted areas and stable Matter area IDs', () => {
+    const homeAssistant = createHomeAssistant();
+    homeAssistant.hassAreas.set('zebra', { area_id: 'zebra', name: 'Zebra' } as HassArea);
+    homeAssistant.hassAreas.set('attic', { area_id: 'attic', name: 'Attic' } as HassArea);
+
+    expect(getSortedHassAreas(homeAssistant).map((area) => area.area_id)).toEqual(['attic', 'zebra']);
+    expect(hassAreaIdToMatterAreaId('attic')).toBe(hassAreaIdToMatterAreaId('attic'));
+    expect(hassAreaIdToMatterAreaId('attic')).not.toBe(hassAreaIdToMatterAreaId('zebra'));
+  });
+
   it('should create a unique id as a 32-character hexadecimal string', () => {
     const uniqueId1 = createUniqueId();
     const uniqueId2 = createUniqueId();

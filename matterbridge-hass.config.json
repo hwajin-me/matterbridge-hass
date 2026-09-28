@@ -22,9 +22,11 @@
   "namePostfix": "",
   "postfix": "",
   "airQualityRegex": "",
+  "humidifierDeviceType": "compatible",
   "enableServerRvc": true,
   "discardHiddenEntities": true,
   "virtualControlLabel": "",
+  "mediaPlayerControlsOnly": false,
   "debug": false,
   "unregisterOnShutdown": false
 }

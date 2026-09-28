@@ -39,8 +39,10 @@ import {
   MatterbridgeColorControlServer,
   MatterbridgeEndpoint,
   MatterbridgeFanControlServer,
+  MatterbridgeWindowCoveringServer,
   MatterbridgeModeSelectServer,
   MatterbridgeOnOffServer,
+  MatterbridgeServiceAreaServer,
   MatterbridgeSmokeCoAlarmServer,
   MatterbridgeThermostatServer,
   MatterbridgeValveConfigurationAndControlServer,
@@ -74,9 +76,11 @@ import {
   RvcCleanMode,
   RvcOperationalState,
   RvcRunMode,
+  ServiceArea,
   SmokeCoAlarm,
   Thermostat,
   ValveConfigurationAndControl,
+  WindowCovering,
 } from 'matterbridge/matter/clusters';
 import { type ClusterId, getClusterNameById, type Semtag, VendorId } from 'matterbridge/matter/types';
 import { isValidNumber, isValidString } from 'matterbridge/utils';
@@ -841,6 +845,61 @@ export class MutableDevice {
     return this;
   }
 
+  /**
+   * Adds position-aware lift and tilt for covers supporting both controls.
+   *
+   * @param {string} endpoint - Cover endpoint identifier.
+   * @returns {this} Current device.
+   */
+  addLiftTiltCover(endpoint: string): this {
+    this.addClusterServerObjs(
+      endpoint,
+      getClusterServerObj(WindowCovering.id, MatterbridgeWindowCoveringServer.with('Lift', 'PositionAwareLift', 'Tilt', 'PositionAwareTilt'), {
+        type: WindowCovering.WindowCoveringType.TiltBlindLift,
+        endProductType: WindowCovering.EndProductType.InteriorBlind,
+        configStatus: {
+          operational: true,
+          onlineReserved: false,
+          liftMovementReversed: false,
+          liftPositionAware: true,
+          tiltPositionAware: true,
+          liftEncoderControlled: false,
+          tiltEncoderControlled: false,
+        },
+        operationalStatus: { global: WindowCovering.MovementStatus.Stopped, lift: WindowCovering.MovementStatus.Stopped, tilt: WindowCovering.MovementStatus.Stopped },
+        mode: { motorDirectionReversed: false, calibrationMode: false, maintenanceMode: false, ledFeedback: false },
+        currentPositionLiftPercent100ths: null,
+        targetPositionLiftPercent100ths: null,
+        currentPositionTiltPercent100ths: null,
+        targetPositionTiltPercent100ths: null,
+      }),
+    );
+    return this;
+  }
+
+  /**
+   * Adds the Matter ServiceArea cluster for a robotic vacuum.
+   *
+   * @param {string} endpoint - Vacuum endpoint identifier.
+   * @param {ServiceArea.Area[]} supportedAreas - Areas selectable by the controller.
+   * @returns {this} Current mutable device.
+   */
+  addClusterServerServiceArea(endpoint: string, supportedAreas: ServiceArea.Area[]): this {
+    const device = this.initializeEndpoint(endpoint);
+    device.clusterServersObjs.push(
+      // The current matter.js server initializes supportedMaps unconditionally.
+      // An empty Maps list keeps registry-based areas valid without inventing a map.
+      getClusterServerObj(ServiceArea.id, MatterbridgeServiceAreaServer.with('Maps'), {
+        supportedAreas,
+        supportedMaps: [],
+        selectedAreas: [],
+        currentArea: null,
+        estimatedEndTime: null,
+      }),
+    );
+    return this;
+  }
+
   addValve(
     endpoint: string,
     valveState: ValveConfigurationAndControl.ValveState = ValveConfigurationAndControl.ValveState.Closed,
@@ -870,13 +929,22 @@ export class MutableDevice {
     return this;
   }
 
-  addSelect(endpoint: string, name: string, items: string[]): this {
+  /**
+   * Adds named choices with stable one-based mode identifiers.
+   *
+   * @param {string} endpoint - Endpoint identifier.
+   * @param {string} name - Mode Select description.
+   * @param {string[]} items - Supported mode labels in ID order.
+   * @param {number} currentMode - Initial supported mode ID (defaults to 1).
+   * @returns {this} Current mutable device.
+   */
+  addSelect(endpoint: string, name: string, items: string[], currentMode = 1): this {
     const device = this.initializeEndpoint(endpoint);
     device.clusterServersObjs.push(
       getClusterServerObj(ModeSelect.id, MatterbridgeModeSelectServer, {
         description: name,
         supportedModes: items.map((item, index) => ({ label: item, mode: index + 1, semanticTags: [] })),
-        currentMode: 1,
+        currentMode,
       }),
     );
     return this;

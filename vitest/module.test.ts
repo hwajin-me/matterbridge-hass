@@ -39,7 +39,18 @@ import {
 } from 'matterbridge/vitest-utils';
 import { createServerNode, createTestEnvironment, destroyTestEnvironment, flushServerNode } from 'matterbridge/vitest-utils/matter';
 
-import { type HassArea, type HassConfig, type HassDevice, type HassEntity, type HassLabel, type HassServices, type HassState, HomeAssistant } from '../src/homeAssistant.js';
+import { generateDevice, generateEntity, hassAreaIdToMatterAreaId } from '../src/helpers.js';
+import {
+  type HassArea,
+  type HassConfig,
+  type HassDevice,
+  type HassEntity,
+  type HassLabel,
+  type HassServices,
+  type HassState,
+  HomeAssistant,
+  MediaPlayerEntityFeature,
+} from '../src/homeAssistant.js';
 import type { HomeAssistantPlatform as HomeAssistantPlatformType, HomeAssistantPlatformConfig } from '../src/module.js';
 import { MutableDevice } from '../src/mutableDevice.js';
 
@@ -504,6 +515,37 @@ describe('HassPlatform', () => {
     );
     expect(callServiceSpy).not.toHaveBeenCalled();
     expect(loggerLogSpy).toHaveBeenCalledWith(LogLevel.WARN, expect.stringContaining(`Command ${ign}unknown${rs}${wr} not supported`));
+  });
+
+  it('should clean selected vacuum areas only when run mode starts cleaning', async () => {
+    const endpoint = new MatterbridgeEndpoint(bridgedNode, { id: 'vacuumAreaRouting' });
+    const areaId = 'test_selected_area';
+    const previousArea = haPlatform.ha.hassAreas.get(areaId);
+    haPlatform.ha.hassAreas.set(areaId, { area_id: areaId, name: 'Test Kitchen' } as HassArea);
+    const hasAttribute = vi.spyOn(endpoint, 'hasAttributeServer').mockReturnValue(true);
+    const getAttribute = vi.spyOn(endpoint, 'getAttribute').mockReturnValue([hassAreaIdToMatterAreaId(areaId)]);
+    const data = { endpoint, request: { newMode: 2 }, cluster: 'rvcRunMode', attributes: {} };
+    try {
+      await haPlatform.commandHandler({ ...data, request: { newAreas: [hassAreaIdToMatterAreaId(areaId)] }, cluster: 'serviceArea' }, 'vacuum.test_rooms', 'selectAreas');
+      expect(callServiceSpy).not.toHaveBeenCalled();
+      await haPlatform.commandHandler({ ...data, cluster: 'rvcCleanMode' }, 'vacuum.test_rooms', 'changeToMode');
+      expect(callServiceSpy).not.toHaveBeenCalled();
+      await haPlatform.commandHandler(data, 'vacuum.test_rooms', 'changeToMode');
+      expect(callServiceSpy).toHaveBeenLastCalledWith('vacuum', 'clean_area', 'vacuum.test_rooms', { cleaning_area_id: [areaId] });
+      callServiceSpy.mockClear();
+      getAttribute.mockReturnValue([hassAreaIdToMatterAreaId(areaId), -1]);
+      await haPlatform.commandHandler(data, 'vacuum.test_rooms', 'changeToMode');
+      expect(callServiceSpy).not.toHaveBeenCalled();
+      getAttribute.mockReturnValue([]);
+      await haPlatform.commandHandler(data, 'vacuum.test_rooms', 'changeToMode');
+      // oxlint-disable-next-line unicorn/no-useless-undefined -- Assert that no area payload is sent for an empty selection.
+      expect(callServiceSpy).toHaveBeenLastCalledWith('vacuum', 'start', 'vacuum.test_rooms', undefined);
+    } finally {
+      hasAttribute.mockRestore();
+      getAttribute.mockRestore();
+      if (previousArea) haPlatform.ha.hassAreas.set(areaId, previousArea);
+      else haPlatform.ha.hassAreas.delete(areaId);
+    }
   });
 
   it('should call subscribeHandler', async () => {
@@ -2761,7 +2803,7 @@ describe('HassPlatform', () => {
       motionSensorIlluminanceEntityState as unknown as HassState,
       motionSensorIlluminanceEntityState as unknown as HassState,
     );
-    expect(setAttributeMatterbridgeEndpointSpy).toHaveBeenCalledWith(IlluminanceMeasurement.id, 'measuredValue', 33979, expect.anything());
+    expect(setAttributeMatterbridgeEndpointSpy).toHaveBeenCalledWith(IlluminanceMeasurement.id, 'measuredValue', 33980, expect.anything());
     (motionSensorIlluminanceEntityState.state as any) = 'unknownstate';
     await haPlatform.updateHandler(
       motionSensorDevice.id,
@@ -2853,6 +2895,82 @@ describe('HassPlatform', () => {
     expect(haPlatform.log.logLevel).toBe(LogLevel.DEBUG);
     expect(haPlatform.ha.log.logLevel).toBe(LogLevel.DEBUG);
     expect(haPlatform.stateCache.log.logLevel).toBe(LogLevel.DEBUG);
+  });
+
+  it.each(['individual', 'device', 'split'])('should expose only command switches without labels for %s media players', async (kind) => {
+    const saved = { ...haPlatform.config };
+    Object.assign(haPlatform.config, {
+      mediaPlayerControlsOnly: true,
+      virtualControlLabel: '',
+      filterByArea: '',
+      filterByLabel: '',
+      whiteList: [],
+      blackList: [],
+      entityWhiteList: [],
+      entityBlackList: [],
+      deviceEntityBlackList: {},
+      splitEntities: [],
+      splitByLabel: '',
+    });
+    const device = kind === 'individual' ? null : generateDevice(haPlatform.ha, 'Media room');
+    const entity = generateEntity(haPlatform.ha, 'TV controls', 'media_player', device, null, [], 'on', { supported_features: MediaPlayerEntityFeature.TURN_ON });
+    if (kind === 'split') haPlatform.config.splitEntities = [entity.entity_id];
+    const clearDevice = vi.spyOn(haPlatform, 'clearDeviceSelect');
+    try {
+      await haPlatform.onStart('Media compatibility');
+      expect(matterbridge.addVirtualEndpoint).toHaveBeenCalledTimes(1);
+      expect(matterbridge.addVirtualEndpoint).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('Turn ON'), 'mounted_switch', expect.any(Function));
+      expect(haPlatform.matterbridgeDevices.size).toBe(0);
+      expect(haPlatform.endpointNames.size).toBe(0);
+      expect(clearDevice).not.toHaveBeenCalledWith(kind === 'device' ? device?.id : entity.id);
+      const live = haPlatform.ha.hassStates.get(entity.entity_id);
+      if (!live) throw new Error('Missing media state');
+      expect(haPlatform.stateCache.get(entity.entity_id)).toEqual(live);
+      await haPlatform.updateHandler(device?.id ?? null, entity.entity_id, live, { ...live, state: 'unavailable' });
+      expect(haPlatform.stateCache.get(entity.entity_id)?.attributes.supported_features).toBe(MediaPlayerEntityFeature.TURN_ON);
+      await haPlatform.updateHandler(device?.id ?? null, entity.entity_id, { ...live, state: 'unavailable' }, live);
+      expect(haPlatform.stateCache.get(entity.entity_id)).toEqual(live);
+      // HA can return a restored placeholder after a restart even though no
+      // unavailable event was delivered before the previous bridge stopped.
+      for (const availability of ['unavailable', 'unknown']) {
+        haPlatform.ha.hassStates.set(entity.entity_id, {
+          ...live,
+          state: availability,
+          attributes: { restored: true },
+        } as unknown as HassState);
+        matterbridge.addVirtualEndpoint.mockClear();
+        await haPlatform.onStart('Offline media restart');
+        expect(matterbridge.addVirtualEndpoint).toHaveBeenCalledTimes(1);
+        expect(haPlatform.endpointNames.size).toBe(0);
+      }
+    } finally {
+      clearDevice.mockRestore();
+      Object.assign(haPlatform.config, saved);
+    }
+  });
+
+  it('should keep media domain exclusions in command-switch mode', async () => {
+    const saved = { ...haPlatform.config };
+    Object.assign(haPlatform.config, {
+      mediaPlayerControlsOnly: true,
+      filterByArea: '',
+      filterByLabel: '',
+      whiteList: [],
+      blackList: [],
+      entityWhiteList: [],
+      entityBlackList: ['media_player'],
+      deviceEntityBlackList: {},
+      splitEntities: [],
+      splitByLabel: '',
+    });
+    generateEntity(haPlatform.ha, 'Excluded TV', 'media_player', null, null, [], 'on', { supported_features: MediaPlayerEntityFeature.TURN_ON });
+    try {
+      await haPlatform.onStart('Media exclusions');
+      expect(matterbridge.addVirtualEndpoint).not.toHaveBeenCalled();
+      expect(haPlatform.matterbridgeDevices.size).toBe(0);
+    } finally {
+      Object.assign(haPlatform.config, saved);
+    }
   });
 
   it('should call onShutdown with reason', async () => {

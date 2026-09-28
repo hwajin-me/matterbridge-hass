@@ -30,6 +30,8 @@ import { AnsiLogger, CYAN, db, debugStringify, er, LogLevel, rs, TimestampFormat
 import { getErrorMessage, hasParameter } from 'matterbridge/utils';
 import { WebSocket, type ErrorEvent } from 'ws';
 
+import { fetchVacuumImage } from './vacuumImage.js';
+
 export type DeviceId = string;
 export type EntityId = string;
 
@@ -143,8 +145,10 @@ export interface HassState {
     HassStateMediaPlayerAttributes &
     HassStateLightAttributes &
     HassStateClimateAttributes &
+    HassStateHumidifierAttributes &
     HassStateFanAttributes &
     HassStateValveAttributes &
+    HassStateCoverAttributes &
     HassStateVacuumAttributes &
     HassStateEventAttributes;
   context: HassContext;
@@ -171,6 +175,24 @@ export interface HassStateAttributes {
  */
 export interface HassStateSelectAttributes {
   options: string[]; // List of available options for the select entity
+}
+
+/** Describes Home Assistant cover position attributes (0 closed, 100 open). */
+export interface HassStateCoverAttributes {
+  current_position?: number | null;
+  current_tilt_position?: number | null;
+}
+
+/** Describes Home Assistant cover capabilities. */
+export enum CoverEntityFeature {
+  OPEN = 1,
+  CLOSE = 2,
+  SET_POSITION = 4,
+  STOP = 8,
+  OPEN_TILT = 16,
+  CLOSE_TILT = 32,
+  SET_TILT_POSITION = 64,
+  STOP_TILT = 128,
 }
 
 /**
@@ -487,8 +509,9 @@ export const DIRECTION_REVERSE = 'reverse';
  * Interface representing the attributes of a Home Assistant fan entity's state.
  */
 export interface HassStateFanAttributes {
-  preset_modes: ('auto' | 'low' | 'medium' | 'high' | 'natural_wind' | 'sleep_wind')[] | null; // List of supported fan modes
-  preset_mode: 'auto' | 'low' | 'medium' | 'high' | 'natural_wind' | 'sleep_wind' | null; // Current preset mode of the fan (e.g., "auto") but also the state of the fan entity
+  preset_modes: string[] | null; // List of supported fan modes
+  preset_mode: string | null; // Current preset mode of the fan (e.g., "auto") but also the state of the fan entity
+  percentage_step?: number; // Percentage increment advertised by HA (100 / speed_count).
   percentage: number | null; // Current speed setting. Default is 0.
   direction: typeof DIRECTION_FORWARD | typeof DIRECTION_REVERSE | null; // Current direction of the fan
   oscillating: boolean | null; // Whether the fan is oscillating
@@ -566,6 +589,7 @@ export enum VacuumEntityFeature {
   MAP = 2048,
   STATE = 4096, // Must be set by vacuum platforms derived from StateVacuumEntity
   START = 8192,
+  CLEAN_AREA = 16384,
 }
 /** Vacuum activity states. */
 export enum VacuumActivity {
@@ -584,13 +608,14 @@ export interface HassStateClimateAttributes {
   hvac_modes: HVACMode[]; // List of supported HVAC modes. Fixed set of strings defined by Home Assistant.
   hvac_mode: HVACMode | null; // Current HVAC mode but also the state of the climate entity
   hvac_action?: HVACAction | null; // Current HVAC action
-  preset_modes?: ('none' | 'eco' | 'away' | 'boost' | 'comfort' | 'home' | 'sleep' | 'activity')[]; // List of supported preset modes
-  preset_mode?: 'none' | 'eco' | 'away' | 'boost' | 'comfort' | 'home' | 'sleep' | 'activity' | null; // Current preset mode
-  fan_modes?: ('on' | 'off' | 'auto' | 'low' | 'medium' | 'high' | 'top' | 'middle' | 'focus' | 'diffuse')[]; // List of supported fan modes
-  fan_mode?: 'on' | 'off' | 'auto' | 'low' | 'medium' | 'high' | 'top' | 'middle' | 'focus' | 'diffuse' | null; // Current fan mode
+  preset_modes?: string[]; // List of supported preset modes
+  preset_mode?: string | null; // Current preset mode
+  fan_modes?: string[]; // Integration-defined fan modes, including speed aliases.
+  fan_mode?: string | null; // Current fan mode
   current_humidity: number | null; // Current humidity of the climate entity
   current_temperature: number | null; // Current temperature of the climate entity
   temperature?: number | null; // Target temperature setting for the climate entity (not in heat_cool thermostats)
+  target_temp_step?: number; // Supported target temperature increment in the HA temperature unit
   target_temp_high?: number | null; // Target high temperature setting (for heat_cool thermostats)
   target_temp_low?: number | null; // Target low temperature setting (for heat_cool thermostats)
   min_temp: number; // Minimum temperature setting. Default is DEFAULT_MIN_TEMP.
@@ -1130,6 +1155,18 @@ interface HomeAssistantEventEmitter {
 }
 
 export class HomeAssistant extends EventEmitter {
+  /**
+   * Retrieves a map without sending HA credentials to the browser.
+   * @param {string} entityId Image or camera entity ID.
+   * @returns {Promise<string>} Raster image data URL.
+   */
+  async fetchEntityImage(entityId: string): Promise<string> {
+    return await fetchVacuumImage(this.wsUrl, this.wsAccessToken, entityId, {
+      ca: this.certificatePath ? readFileSync(this.certificatePath) : undefined,
+      rejectUnauthorized: this.rejectUnauthorized,
+    });
+  }
+
   connected = false;
   ws: WebSocket | null = null;
   wsUrl: string;
@@ -1980,4 +2017,13 @@ export class HomeAssistant extends EventEmitter {
       );
     });
   }
+}
+
+/** Home Assistant humidifier attributes, shared by humidifiers and dehumidifiers. */
+export interface HassStateHumidifierAttributes {
+  action?: string | null;
+  available_modes?: string[] | null;
+  mode?: string | null;
+  humidity?: number | null;
+  target_humidity_step?: number | null;
 }

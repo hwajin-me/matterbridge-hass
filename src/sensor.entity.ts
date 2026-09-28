@@ -30,6 +30,7 @@ import { isValidString } from 'matterbridge/utils';
 import { hassDomainSensorsConverter } from './converters.js';
 import { getDomain } from './helpers.js';
 import type { HassEntity, HassState } from './homeAssistant.js';
+import { matchesSensorStateClass } from './measurements.js';
 import type { HomeAssistantPlatform } from './module.js';
 import type { MutableDevice } from './mutableDevice.js';
 
@@ -69,12 +70,17 @@ export function addSensorEntity(
 
   // Look for supported sensors of the current entity
   hassDomainSensorsConverter
-    .filter((d) => d.domain === domain && d.withStateClass === state.attributes['state_class'] && d.withDeviceClass === state.attributes['device_class'])
+    .filter(
+      (d) =>
+        d.domain === domain &&
+        matchesSensorStateClass(d.withStateClass, state.attributes.state_class, state.attributes.device_class) &&
+        d.withDeviceClass === state.attributes.device_class,
+    )
     .forEach((hassDomainSensor) => {
       // oxfmt-ignore
-      if (hassDomainSensor.deviceType === powerSource && state.attributes['state_class'] === 'measurement' && state.attributes['device_class'] === 'voltage' && !battery) return; // Skip powerSource voltage sensor if the device is not battery powered
+      if (hassDomainSensor.deviceType === powerSource && state.attributes['device_class'] === 'voltage' && !battery) return; // Skip powerSource voltage sensor if the device is not battery powered
       // oxfmt-ignore
-      if (hassDomainSensor.deviceType === electricalSensor && state.attributes['state_class'] === 'measurement' && state.attributes['device_class'] === 'voltage' && battery) return; // Skip electricalSensor voltage sensor if the device is battery powered
+      if (hassDomainSensor.deviceType === electricalSensor && state.attributes['device_class'] === 'voltage' && battery) return; // Skip electricalSensor voltage sensor if the device is battery powered
       if (hassDomainSensor.endpoint === undefined) {
         endpointName = entity.entity_id; // Use the entity ID as the endpoint name
       } else {

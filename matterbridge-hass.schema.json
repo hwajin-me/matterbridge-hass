@@ -118,6 +118,7 @@
           "fan",
           "cover",
           "climate",
+          "humidifier",
           "valve",
           "vacuum",
           "sensor",
@@ -127,7 +128,8 @@
           "remote",
           "select",
           "input_select",
-          "media_player"
+          "media_player",
+          "siren"
         ]
       },
       "uniqueItems": true
@@ -150,6 +152,7 @@
           "fan",
           "cover",
           "climate",
+          "humidifier",
           "valve",
           "vacuum",
           "sensor",
@@ -159,7 +162,8 @@
           "remote",
           "select",
           "input_select",
-          "media_player"
+          "media_player",
+          "siren"
         ]
       },
       "uniqueItems": true
@@ -211,6 +215,45 @@
       "description": "Custom regex pattern to match not standard air quality sensors entities (e.g., '^sensor\\..*_air_quality$').",
       "type": "string"
     },
+    "vacuumMapRegex": {
+      "title": "Vacuum Map Regex",
+      "description": "Regex matching map image/camera entity IDs (e.g. '^(image|camera)\\..*(live_map|vacuum_map)$'). With one selected vacuum, also finds maps on a separate HA device such as Xiaomi Cloud Map Extractor. With multiple vacuums, use Vacuum Map Entities for explicit association. Leave empty for same-device discovery. Restart the plugin after changing.",
+      "type": "string",
+      "default": ""
+    },
+    "vacuumMapEntities": {
+      "title": "Vacuum Map Entities",
+      "description": "Optional per-vacuum override: key = vacuum entity ID, value = image/camera entity ID. Takes precedence over Vacuum Map Regex. Use this when several vacuums or separate map integrations exist.",
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^vacuum\\.[a-z0-9_]+$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^(image|camera)\\.[a-z0-9_]+$"
+      },
+      "default": {}
+    },
+    "humidifierDeviceType": {
+      "title": "Humidifier / Dehumidifier Matter type",
+      "description": "Applies to all humidifier and dehumidifier entities. Compatible is the default. Native uses provisional Humidity Conditioner/Humidistat definitions: choose the physical mist type for humidifiers; either native option supports dehumidifiers. Unsupported HA metadata falls back to Compatible. Save and restart the plugin to apply. Controllers may require rediscovery or re-pairing after changing the device type.",
+      "type": "string",
+      "default": "compatible",
+      "oneOf": [
+        {
+          "const": "compatible",
+          "title": "Compatible (default)"
+        },
+        {
+          "const": "native-cold-mist",
+          "title": "Native: Humidifier (cold mist) / Dehumidifier (experimental)"
+        },
+        {
+          "const": "native-warm-mist",
+          "title": "Native: Humidifier (warm mist) / Dehumidifier (experimental)"
+        }
+      ]
+    },
     "enableServerRvc": {
       "title": "Enable Server Rvc",
       "description": "Enable the Robot Vacuum Cleaner in server mode (Apple Home will crash unless you use this mode!). Also filter out or blacklist any other entities related to the vacuum cleaner device to avoid Apple Home crashes.",
@@ -229,6 +272,12 @@
       "type": "string",
       "default": ""
     },
+    "mediaPlayerControlsOnly": {
+      "title": "Apple Home Media Command Switches",
+      "description": "Expose eligible media players only as supported command switches, without the unsupported direct media-player endpoint. No Virtual Control Label is needed. Existing area, label, domain and device filters still apply. Includes power, playback, mute/unmute and volume steps when supported. Restart Matterbridge after changing. Does not add Now Playing or AirPlay; other controllers using this bridge also receive switches.",
+      "type": "boolean",
+      "default": false
+    },
     "debug": {
       "title": "Enable Debug",
       "description": "Enable the debug for the plugin (development only)",
@@ -241,6 +290,39 @@
       "type": "boolean",
       "default": false,
       "ui:widget": "hidden"
+    },
+    "vacuumControlBindings": {
+      "title": "Vacuum Control Bindings (Virtual Layer)",
+      "description": "Opt-in advanced actions per virtual vacuum. Set command names handled by Virtual Layer send_command actions. No vendor protocol is assumed. goTo passes params {x,y} in calibrated vacuum coordinates; cleanRooms passes {rooms:[IDs]}; startPreset passes {preset_id:ID}. Leave unconfigured actions disabled. Restart after saving.",
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^vacuum\\.[a-z0-9_]+$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "goTo": {
+            "type": "string",
+            "title": "Go to map position command",
+            "pattern": "^$|^[a-zA-Z0-9_.-]{1,80}$",
+            "default": ""
+          },
+          "cleanRooms": {
+            "type": "string",
+            "title": "Clean selected rooms command",
+            "pattern": "^$|^[a-zA-Z0-9_.-]{1,80}$",
+            "default": ""
+          },
+          "startPreset": {
+            "type": "string",
+            "title": "Run saved preset command",
+            "pattern": "^$|^[a-zA-Z0-9_.-]{1,80}$",
+            "default": ""
+          }
+        }
+      },
+      "default": {}
     }
   }
 }

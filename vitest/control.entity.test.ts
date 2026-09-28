@@ -44,6 +44,7 @@ function createMockMutableDevice(): MutableDevice {
     }),
     setFriendlyName: vi.fn(),
     get: vi.fn((ep: string) => ({ deviceTypes: ensure(ep).deviceTypes })),
+    addClusterServerObjs: vi.fn(),
     addClusterServerColorTemperatureColorControl: vi.fn(),
     addClusterServerColorControl: vi.fn(),
     addClusterServerAutoModeThermostat: vi.fn(),
@@ -53,7 +54,9 @@ function createMockMutableDevice(): MutableDevice {
     addClusterServerDefaultFanControl: vi.fn(),
     addClusterServerCompleteFanControl: vi.fn(),
     addVacuum: vi.fn(),
+    addClusterServerServiceArea: vi.fn(),
     addValve: vi.fn(),
+    addLiftTiltCover: vi.fn(),
     addSelect: vi.fn(),
     addOnOff: vi.fn(),
     addBasicVideoPlayer: vi.fn(),
@@ -64,13 +67,16 @@ function createMockMutableDevice(): MutableDevice {
 }
 
 const mockLog = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any;
-const mockPlatform = { config: { virtualControlLabel: '' }, log: mockLog } as any;
+const mockPlatform = { config: { virtualControlLabel: '' }, log: mockLog, ha: { hassAreas: new Map() }, environmentControls: new Map(), mediaControlEntities: new Set() } as any;
 const commandHandler = vi.fn(async () => {}); // async signature required
 const subscribeHandler = vi.fn();
 type VirtualDeviceCallback = () => Promise<void>;
 
 describe('addControlEntity', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPlatform.ha.hassAreas.clear();
+  });
 
   const make = (domain: string, name: string, attrs: Record<string, any>): readonly [MutableDevice, HassEntity, HassState] => {
     const md = createMockMutableDevice();
@@ -127,6 +133,40 @@ describe('addControlEntity', () => {
     expect(md.addDeviceTypes).toHaveBeenCalledWith(e.entity_id, extendedColorLight);
     expect(md.addClusterServerColorControl).toHaveBeenCalled();
     expect(md.addClusterServerColorTemperatureColorControl).not.toHaveBeenCalled();
+  });
+
+  it('adds a mode selector when a light exposes effects', () => {
+    const [md, entity, state] = make('light', 'effects', { effect_list: ['Waves', 'Sunset'] });
+    addControlEntity(mockPlatform, md, entity, state, commandHandler, subscribeHandler as any);
+    expect(md.addSelect).toHaveBeenCalledWith(entity.entity_id, 'Effect', ['Waves', 'Sunset']);
+  });
+
+  it.each([
+    [68, true],
+    [4, false],
+    [64, false],
+    [0, false],
+  ])('enables lift and tilt only for supported covers (%s)', (features, enabled) => {
+    const [md, entity, state] = make('cover', 'blind', { supported_features: features });
+    addControlEntity(mockPlatform, md, entity, state, commandHandler, subscribeHandler as any);
+    expect(md.addLiftTiltCover).toHaveBeenCalledTimes(enabled ? 1 : 0);
+  });
+
+  it('adds fan control when a climate entity exposes fan modes', () => {
+    const [md, entity, state] = make('climate', 'fan_coil', {
+      hvac_modes: ['heat'],
+      fan_modes: ['auto', 'low', 'medium', 'high'],
+      fan_mode: 'medium',
+    });
+    addControlEntity(mockPlatform, md, entity, state, commandHandler, subscribeHandler as any);
+    expect(md.addClusterServerDefaultFanControl).toHaveBeenCalled();
+  });
+
+  it('adds ServiceArea when a vacuum supports clean_area', () => {
+    mockPlatform.ha.hassAreas.set('kitchen', { area_id: 'kitchen', name: 'Kitchen' });
+    const [md, entity, state] = make('vacuum', 'robby', { supported_features: 16384 });
+    addControlEntity(mockPlatform, md, entity, state, commandHandler, subscribeHandler as any);
+    expect(md.addClusterServerServiceArea).toHaveBeenCalledWith(entity.entity_id, expect.any(Array));
   });
 
   it('light without friendly_name does not call setFriendlyName', () => {
@@ -216,10 +256,10 @@ describe('addControlEntity', () => {
   it('fan extended features when direction/oscillating, basic otherwise', () => {
     let [md, e, s] = make('fan', 'dir', { direction: 'forward', preset_modes: ['low', 'high'] });
     addControlEntity(mockPlatform, md, e, s, commandHandler, subscribeHandler as any);
-    expect(md.addClusterServerCompleteFanControl).toHaveBeenCalledTimes(1);
+    expect(md.addClusterServerObjs).toHaveBeenCalledTimes(1);
     [md, e, s] = make('fan', 'osc', { oscillating: true, preset_modes: ['low'] });
     addControlEntity(mockPlatform, md, e, s, commandHandler, subscribeHandler as any);
-    expect(md.addClusterServerCompleteFanControl).toHaveBeenCalledTimes(1); // fresh mock count
+    expect(md.addClusterServerObjs).toHaveBeenCalledTimes(1); // fresh mock count
     [md, e, s] = make('fan', 'simple', { preset_modes: ['low', 'high'] });
     addControlEntity(mockPlatform, md, e, s, commandHandler, subscribeHandler as any);
     expect(md.addClusterServerCompleteFanControl).not.toHaveBeenCalled();
@@ -378,6 +418,7 @@ describe('addControlEntity', () => {
       config: { splitNameStrategy: 'Friendly name', virtualControlLabel: 'Virtual Controls' },
       ha: {
         callService,
+        hassEntities: new Map([[e.entity_id, e]]),
         hassLabels: new Map([['virtual-controls', { label_id: 'virtual-controls', name: 'Virtual Controls' }]]),
         hassStates: new Map([[e.entity_id, s]]),
       },
@@ -387,6 +428,7 @@ describe('addControlEntity', () => {
 
     addControlEntity(platform, md, entity, s, commandHandler, subscribeHandler as any);
 
+    await vi.waitFor(() => expect(registerVirtualDevice).toHaveBeenCalledTimes(3));
     expect(registerVirtualDevice).toHaveBeenCalledTimes(3);
     expect(registerVirtualDevice).toHaveBeenNthCalledWith(1, 'Turn ON Living Room TV', 'mounted_switch', expect.any(Function));
     expect(registerVirtualDevice).toHaveBeenNthCalledWith(2, 'Volume Down Living Room TV', 'mounted_switch', expect.any(Function));
@@ -407,9 +449,11 @@ describe('addControlEntity', () => {
     const registerVirtualDevice = vi.fn<(name: string, deviceType: string, callback: VirtualDeviceCallback) => Promise<void>>().mockResolvedValue();
     const log = { debug: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const platform = {
+      mediaControlEntities: new Set(),
       config: { splitNameStrategy: 'Friendly name', virtualControlLabel: 'Virtual Controls' },
       ha: {
         callService,
+        hassEntities: new Map([[e.entity_id, e]]),
         hassLabels: new Map([['virtual-controls', { label_id: 'virtual-controls', name: 'Virtual Controls' }]]),
         hassStates: new Map([[e.entity_id, s]]),
       },
@@ -421,7 +465,7 @@ describe('addControlEntity', () => {
     addControlEntity(platform, md, entity, s, commandHandler, subscribeHandler as any);
 
     const turnOnCallback = registerVirtualDevice.mock.calls[0][2];
-    await turnOnCallback();
+    await expect(turnOnCallback()).rejects.toThrow('boom');
     await Promise.resolve();
 
     expect(callService).toHaveBeenCalledWith('media_player', MediaPlayerService.TURN_ON, e.entity_id);
@@ -432,7 +476,7 @@ describe('addControlEntity', () => {
   it('registers all command handlers for light domain', () => {
     const [md, e, s] = make('light', 'cmds', {});
     addControlEntity(mockPlatform, md, e, s, commandHandler, subscribeHandler as any);
-    const expected = hassCommandConverter.filter((c) => c.domain === 'light').map((c) => c.command);
+    const expected = hassCommandConverter.filter((c) => c.domain === 'light' && c.command !== 'changeToMode').map((c) => c.command);
     // @ts-expect-error chainable return
     const registered = md.addCommandHandler.mock.calls.map((c: any[]) => c[1]);
     expected.forEach((cmd) => expect(registered).toContain(cmd));
@@ -458,6 +502,15 @@ describe('addControlEntity', () => {
       await handler({ request: {}, cluster: 'x', attributes: {}, endpoint: {} }, e.entity_id, call[1]);
     }
     expect(commandHandler).toHaveBeenCalledTimes(calls.length);
+  });
+
+  it('propagates Home Assistant service failures to the Matter command caller', async () => {
+    const [md, entity, state] = make('light', 'failure', {});
+    addControlEntity(mockPlatform, md, entity, state, commandHandler, subscribeHandler as any);
+    commandHandler.mockRejectedValueOnce(new Error('Home Assistant unavailable'));
+    // @ts-expect-error The mutable device fixture supplies a mock command registrar.
+    const callback = md.addCommandHandler.mock.calls[0][2];
+    await expect(callback({ request: {}, cluster: 'onOff', attributes: {}, endpoint: {} }, entity.entity_id, 'on')).rejects.toThrow('Home Assistant unavailable');
   });
 
   it('executes registered subscribe handler callbacks (fan domain)', () => {

@@ -23,6 +23,7 @@ import {
   genericSwitch,
   humiditySensor,
   invokeSubscribeHandler,
+  invokeBehaviorCommand,
   MatterbridgeEndpoint,
   onOffLight,
   onOffLightSwitch,
@@ -35,6 +36,7 @@ import {
   temperatureSensor,
   thermostat,
   waterValve,
+  windowCovering,
 } from 'matterbridge';
 import { AnsiLogger, LogLevel, TimestampFormat } from 'matterbridge/logger';
 import { UINT16_MAX, UINT32_MAX } from 'matterbridge/matter';
@@ -52,9 +54,11 @@ import {
   PowerSource,
   PressureMeasurement,
   RelativeHumidityMeasurement,
+  ServiceArea,
   SmokeCoAlarm,
   TemperatureMeasurement,
   ValveConfigurationAndControl,
+  WindowCovering,
 } from 'matterbridge/matter/clusters';
 import { HOMEDIR, setDebug, setupTest } from 'matterbridge/vitest-utils';
 import {
@@ -144,6 +148,48 @@ describe('MutableDevice', () => {
     expect((mutableDevice as any).log.logLevel).toBe(LogLevel.NONE);
 
     mutableDevice.destroy();
+  });
+
+  it('should create a position-aware lift and tilt endpoint', async () => {
+    const mutableDevice = new MutableDevice(mockMatterbridge, 'Lift Tilt Blind');
+    mutableDevice.addDeviceTypes('', windowCovering);
+    mutableDevice.addLiftTiltCover('');
+    const blind = mutableDevice.create();
+    try {
+      await addDevice(aggregator, blind);
+      expect(blind.getAttribute(WindowCovering.id, 'featureMap')).toMatchObject({ lift: true, tilt: true, positionAwareLift: true, positionAwareTilt: true });
+      expect(blind.getAttribute(WindowCovering, 'currentPositionTiltPercent100ths')).toBeNull();
+      await blind.setAttribute(WindowCovering.id, 'currentPositionTiltPercent100ths', 2500);
+      expect(blind.getAttribute(WindowCovering, 'currentPositionTiltPercentage')).toBe(25);
+    } finally {
+      await blind.delete();
+      mutableDevice.destroy();
+    }
+  });
+
+  it('should validate and store vacuum area selections without starting a job', async () => {
+    const mutableDevice = new MutableDevice(mockMatterbridge, 'Room Vacuum');
+    mutableDevice.addDeviceTypes('', roboticVacuumCleaner);
+    mutableDevice.addVacuum('');
+    mutableDevice.addClusterServerServiceArea('', [
+      { areaId: 42, mapId: null, areaInfo: { locationInfo: { locationName: 'Kitchen', floorNumber: null, areaType: null }, landmarkInfo: null } },
+    ]);
+    const vacuum = mutableDevice.create();
+    const start = vi.fn();
+    vacuum.addCommandHandler('changeToMode', start);
+    await aggregator.add(vacuum);
+    try {
+      await invokeBehaviorCommand(vacuum, 'ServiceArea', 'selectAreas', { newAreas: [42] });
+      expect(vacuum.getAttribute(ServiceArea, 'selectedAreas')).toEqual([42]);
+      await invokeBehaviorCommand(vacuum, 'ServiceArea', 'selectAreas', { newAreas: [999] });
+      expect(vacuum.getAttribute(ServiceArea, 'selectedAreas')).toEqual([42]);
+      await invokeBehaviorCommand(vacuum, 'ServiceArea', 'selectAreas', { newAreas: [] });
+      expect(vacuum.getAttribute(ServiceArea, 'selectedAreas')).toEqual([]);
+      expect(start).not.toHaveBeenCalled();
+    } finally {
+      await vacuum.delete();
+      mutableDevice.destroy();
+    }
   });
 
   it('should throw error', async () => {

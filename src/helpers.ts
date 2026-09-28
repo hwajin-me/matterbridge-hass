@@ -219,6 +219,53 @@ export function satisfiesAreaFilter(platform: HomeAssistantPlatform, deviceOrEnt
 }
 
 /**
+ * Returns Home Assistant areas in a deterministic order.
+ *
+ * @param {HomeAssistant} ha - Home Assistant registry source.
+ * @returns {HassArea[]} Areas sorted by their stable registry identifiers.
+ */
+export function getSortedHassAreas(ha: HomeAssistant): HassArea[] {
+  return Array.from(ha.hassAreas.values()).toSorted((first, second) => (first.area_id < second.area_id ? -1 : first.area_id > second.area_id ? 1 : 0));
+}
+
+/**
+ * Derives a stable Matter ServiceArea AreaId from a Home Assistant area ID.
+ *
+ * @param {string} areaId - Home Assistant area registry identifier.
+ * @returns {number} Stable unsigned 32-bit Matter area identifier.
+ */
+export function hassAreaIdToMatterAreaId(areaId: string): number {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < areaId.length; index += 1) {
+    // oxlint-disable-next-line no-bitwise -- FNV-1a requires XOR.
+    hash ^= areaId.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  // oxlint-disable-next-line no-bitwise -- Convert the signed hash to uint32.
+  return hash >>> 0;
+}
+
+/**
+ * Truncates a string to a UTF-8 byte limit without splitting Unicode code points.
+ *
+ * @param {string} value - Original string.
+ * @param {number} maxBytes - Nonnegative integer byte limit.
+ * @returns {string} Longest complete prefix fitting the byte limit, or empty for an invalid limit.
+ */
+export function truncateUtf8(value: string, maxBytes: number): string {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) return '';
+  let result = '';
+  let length = 0;
+  for (const character of value) {
+    const size = Buffer.byteLength(character, 'utf8');
+    if (length + size > maxBytes) break;
+    result += character;
+    length += size;
+  }
+  return result;
+}
+
+/**
  * Checks if a given entity or device satisfies the configured label filter.
  *
  * @param {HomeAssistantPlatform} platform - The Home Assistant platform instance.

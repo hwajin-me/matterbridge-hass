@@ -39,6 +39,8 @@ Features:
 - It is possible to postfix the Matter device serialNumber and the Matter device name to avoid collision with other instances.
 - Support **Apple Home Adaptive Lighting**. See https://github.com/Luligu/matterbridge/discussions/390.
 - Support **transition time**.
+- Supports robotic-vacuum Home Assistant area selection through Matter ServiceArea when the vacuum exposes `clean_area`.
+- Supports climate fan modes, light effects, and media-player volume through their respective Matter clusters when exposed by Home Assistant.
 - Support system unit **CELSIUS** and **FAHRENHEIT**.
 - Jest test coverage = 100%.
 
@@ -70,26 +72,66 @@ Pair Matterbridge to your controller.
 
 ## Supported device entities:
 
-| Domain       | Supported states                           | Supported attributes                                                                    |
-| ------------ | ------------------------------------------ | --------------------------------------------------------------------------------------- |
-| switch       | on, off                                    |                                                                                         |
-| light        | on, off                                    | brightness, color_mode, color_temp, hs_color, xy_color                                  |
-| lock         | locked, locking, unlocking, unlocked       |                                                                                         |
-| fan          | on, off                                    | percentage, preset_mode (1), direction, oscillating                                     |
-| cover        | open, closed, opening, closing             | current_position                                                                        |
-| climate      | off, heat, cool, heat_cool, auto           | current_temperature, temperature, target_temp_low, target_temp_high, min_temp, max_temp |
-| valve        | open, closed, opening, closing             | current_position                                                                        |
-| vacuum (2)   | idle, cleaning, paused, docked, returning  |                                                                                         |
-| button       |                                            |                                                                                         |
-| remote       | on, off                                    |                                                                                         |
-| select       |                                            | options                                                                                 |
-| media_player | on, off, play, pause, stop, previous, next |                                                                                         |
+| Domain       | Supported states                           | Supported attributes                                                                                                               |
+| ------------ | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| switch       | on, off                                    |                                                                                                                                    |
+| light        | on, off                                    | brightness, color_mode, color_temp, hs_color, xy_color                                                                             |
+| lock         | locked, locking, unlocking, unlocked, open | `open` is exposed as Matter `unlocked` (Matter has no separate lock-open state)                                                    |
+| fan          | on, off                                    | percentage, preset_mode (1), direction, oscillating                                                                                |
+| cover        | open, closed, opening, closing             | current_position, current_tilt_position (requires lift and tilt positioning)                                                       |
+| climate      | off, heat, cool, heat_cool, auto           | current_temperature, temperature, target_temp_low, target_temp_high, min_temp, max_temp, current_humidity, fan_modes, preset_modes |
+| humidifier   | on, off                                    | Humidifier and dehumidifier: current_humidity, humidity, min_humidity, max_humidity, target_humidity_step, available_modes         |
+| valve        | open, closed, opening, closing             | current_position                                                                                                                   |
+| vacuum (2)   | idle, cleaning, paused, docked, returning  |                                                                                                                                    |
+| button       |                                            |                                                                                                                                    |
+| remote       | on, off                                    |                                                                                                                                    |
+| siren        | on, off                                    | Basic switching as an on/off outlet; tones and duration are not exposed                                                            |
+| select       |                                            | options                                                                                                                            |
+| media_player | on, off, play, pause, stop, previous, next |                                                                                                                                    |
 
 (1) - Supported preset_modes: auto, low, medium, high.
 
 (2) - The Apple Home crashes if the Rvc is inside the bridge. If you pair with Apple Home use the server mode in the config (it will create an autonomous device with its QR code in the Devices panel of the Home page) and disable or split all other entities that are not the rvc.
 
 These domains are supported also like individual and split entities.
+
+## Climate, humidifier and dehumidifier controls
+
+Fan percentage commands respect HA `percentage_step` (or `speed_count` when available). A five-speed fan uses 20/40/60/80/100%; requests snap to the nearest supported speed (ties round up), positive requests stay on, and 0 turns it off. Matter Step commands move one actual speed at a time and honor wrap/lowest-off options. Controller sliders may still show every percentage; HA feedback synchronizes the accepted speed. Missing or invalid step metadata retains continuous percentage control. Restart the plugin after changing speed capabilities.
+
+Climate temperature commands respect Home Assistant `min_temp`, `max_temp`, and `target_temp_step` (including 0.5° and 1° increments), in the entity temperature unit. Unsupported increments are rounded to a supported target and reflected back to Matter. Controller apps may still display their own temperature increment. HA target changes also synchronize while off; stale range targets do not overwrite a single target.
+
+Climate entities expose their integration-defined `preset_modes` and `fan_modes` as separate Matter Mode Select controls named **Preset** and **Fan mode**. Labels such as `eco`, `sleep`, `Quiet`, or `Turbo` are preserved and commands call `climate.set_preset_mode` or `climate.set_fan_mode`. Standard low/medium/high/auto fan modes also retain the Fan Control cluster. An unknown fan mode does not overwrite the reported fan state with Off. Current humidity is exposed as a humidity sensor when the attribute exists.
+
+Home Assistant uses the [`humidifier` domain for both humidifiers and dehumidifiers](https://developers.home-assistant.io/docs/core/entity/humidifier/). Both are now discoverable as device, individual, and split entities. By default (`humidifierDeviceType: "compatible"`), they are represented by an on/off outlet and optional humidity sensor for controller compatibility. The Home Assistant friendly name is retained; name the entity accordingly to distinguish humidification from dehumidification in your controller.
+
+- **Mode** preserves `available_modes` and calls `humidifier.set_mode`; this includes presets or speed-like modes supplied by the integration.
+- **Target humidity** calls `humidifier.set_humidity` and shows percentage choices within `min_humidity`/`max_humidity`, respecting `target_humidity_step` (default 1%). It is added only when the `humidity` attribute is present and its range fits at most 255 choices.
+- The standard humidifier API has no fan-speed service. If the integration supplies a separate `fan` or `select` entity for speed, enable that entity as well. Arbitrary humidifier `fan_mode` attributes are not sent to an invented service.
+
+Mode Select visibility depends on your Matter controller. These controls do not guarantee a thermostat preset menu or a native humidity slider in every app. Supported labels must be unique, nonempty, at most 64 UTF-8 bytes each, with at most 255 options. Option IDs remain stable while running; reordered Home Assistant lists still select the original label. Removed options and unavailable devices are rejected, and newly added options require restarting the plugin. HA state changes update the selected mode without sending service commands back to HA.
+
+## Experimental native humidity type
+
+In the Matterbridge frontend, open **Plugins → matterbridge-hass → Plugin config** (gear icon), then **Humidifier / Dehumidifier Matter type**. Select **Compatible (default)**, **Native: Humidifier (cold mist) / Dehumidifier (experimental)**, or **Native: Humidifier (warm mist) / Dehumidifier (experimental)**, save, and restart the plugin. This is a plugin-wide setting; it is not an immediate device command. Select Compatible and restart again to return to the existing mapping. No manual JSON edit is required.
+
+Set `humidifierDeviceType` to `native-cold-mist` or `native-warm-mist` to opt into the provisional **Humidity Conditioner (0x007D, revision 1)** with **Humidistat (0x0205, revision 1)** and non-lighting On/Off (Dead Front Behavior). Choose the actual mist type of your humidifier; Home Assistant does not expose it generically. For `device_class: dehumidifier`, either native selection exposes dehumidification without mist features. The default remains `compatible`.
+
+The implementation follows the upstream CHIP [Humidity Conditioner definition](https://github.com/project-chip/connectedhomeip/blob/master/examples/all-devices-app/all-devices-common/device/types/humidity-conditioner/HumidityConditioner.cpp) and [provisional Humidistat schema](https://github.com/project-chip/connectedhomeip/blob/master/src/app/zap-templates/zcl/data-model/chip/humidistat-cluster.xml). This is an experimental mapping, not a certified or finalized Matter device implementation; controllers may not recognize the new type. Changing device types may require rediscovery or re-pairing.
+
+Native mode requires an explicit humidifier/dehumidifier `device_class`, valid integer percentage limits, step and target. Unsupported capabilities fall back to the compatible type with a warning. Native targets are exposed directly through Humidistat instead of the target Mode Select child; integration-specific Mode presets remain available. SetSettings and writable targets validate limits and steps, forward `humidifier.set_humidity`, and propagate service errors. Only the actual humidifying/drying action reports active operation; other states report Idle. Auto, continuous, sleep and optimal modes are not advertised or accepted.
+
+## Fans and air circulators
+
+Home Assistant `fan` entities, including air circulators, use the standard **Fan (0x002B, revision 4)** type with Identify, Groups and Fan Control. Optional features follow `supported_features`, with attribute-based detection only when that bitmask is absent: Step for speed control, Rocking for oscillation, Airflow Direction for direction, and Auto for an advertised `auto` preset. Generic HA oscillation retains the RockRound mapping; it does not imply separate horizontal and vertical controls.
+
+Wind is exposed only for `sleep_wind`/`natural_wind` presets when a manual mode or speed can restore normal operation. Wind writes call `fan.set_preset_mode`; clearing wind restores the current manual percentage or a supported normal preset. Simultaneous sleep and natural wind is rejected because HA accepts one preset at a time. HA feedback updates wind attributes without issuing another service call.
+
+## Energy meters
+
+Energy meters use Home Assistant `sensor` entities: `device_class: energy` with `state_class: total` or `total_increasing` maps to Matter cumulative imported energy. Power, voltage and current map to the Electrical Power Measurement cluster. Wh/kWh/MWh and J/kJ/MJ/GJ are converted to Matter milliwatt-hours; W/kW, V and A are converted to the corresponding milli-units. Invalid values, negative cumulative energy, unknown units and unsafe numeric overflow are ignored so they do not replace the last valid reading.
+
+These are live measurements, not a replicated HA Energy dashboard: tariffs, cost calculations and historical charts are not transferred. Import/export direction is not inferred from entity names, and exported-energy counters are not currently mapped to `cumulativeEnergyExported`. When one HA device has several energy counters (daily, lifetime, multiple channels), select one per device or put additional counters in `splitEntities` to avoid sharing the same Matter attribute. Controller support determines whether energy measurements are displayed.
 
 ## Supported individual entities:
 
@@ -108,30 +150,31 @@ These domains are supported also like device entities and split entities.
 
 ## Supported sensors:
 
-| Domain | Supported state class | Supported device class     | Unit           | Matter device type |
-| ------ | --------------------- | -------------------------- | -------------- | ------------------ |
-| sensor | measurement           | temperature                | °C, °F         | temperatureSensor  |
-| sensor | measurement           | humidity                   | %              | humiditySensor     |
-| sensor | measurement           | pressure                   | inHg, hPa, kPa | pressureSensor     |
-| sensor | measurement           | atmospheric_pressure       | inHg, hPa, kPa | pressureSensor     |
-| sensor | measurement           | illuminance                | lx             | lightSensor        |
-| sensor | measurement           | battery (3)                | %              | powerSource        |
-| sensor | measurement           | voltage (battery) (3)      | mV             | powerSource        |
-| sensor | measurement           | voltage                    | V              | electricalSensor   |
-| sensor | measurement           | current                    | A              | electricalSensor   |
-| sensor | measurement           | power                      | W              | electricalSensor   |
-| sensor | measurement           | energy                     | kWh            | electricalSensor   |
-| sensor | measurement           | aqi (1)                    |                | airQualitySensor   |
-| sensor | measurement           | volatile_organic_compounds | ugm3 (2)       | airQualitySensor   |
-| sensor | measurement           | carbon_dioxide             | ppm (2)        | airQualitySensor   |
-| sensor | measurement           | carbon_monoxide            | ppm (2)        | airQualitySensor   |
-| sensor | measurement           | nitrogen_dioxide           | ugm3 (2)       | airQualitySensor   |
-| sensor | measurement           | ozone                      | ugm3 (2)       | airQualitySensor   |
-| sensor | measurement           | formaldehyde               | mgm3 (2)       | airQualitySensor   |
-| sensor | measurement           | radon                      | bqm3 (2)       | airQualitySensor   |
-| sensor | measurement           | pm1                        | ugm3 (2)       | airQualitySensor   |
-| sensor | measurement           | pm25                       | ugm3 (2)       | airQualitySensor   |
-| sensor | measurement           | pm10                       | ugm3 (2)       | airQualitySensor   |
+| Domain | Supported state class   | Supported device class     | Unit                                                                      | Matter device type |
+| ------ | ----------------------- | -------------------------- | ------------------------------------------------------------------------- | ------------------ |
+| sensor | measurement             | temperature                | °C, °F                                                                    | temperatureSensor  |
+| sensor | measurement             | humidity                   | %                                                                         | humiditySensor     |
+| sensor | measurement             | pressure                   | inHg, hPa, kPa                                                            | pressureSensor     |
+| sensor | measurement             | atmospheric_pressure       | inHg, hPa, kPa                                                            | pressureSensor     |
+| sensor | measurement             | illuminance                | lx                                                                        | lightSensor        |
+| sensor | measurement             | battery (3)                | %                                                                         | powerSource        |
+| sensor | measurement             | voltage (battery) (3)      | mV                                                                        | powerSource        |
+| sensor | measurement             | voltage                    | mV, V, kV                                                                 | electricalSensor   |
+| sensor | measurement             | current                    | mA, A                                                                     | electricalSensor   |
+| sensor | measurement             | power                      | mW, W, kW, MW                                                             | electricalSensor   |
+| sensor | total, total_increasing | energy                     | Wh, kWh, MWh, J, kJ, MJ, GJ                                               | electricalSensor   |
+| sensor | measurement             | volume_flow_rate           | m³/h, m³/min, m³/s, L/h, L/min, L/s, mL/s, ft³/min, gal/d, gal/h, gal/min | flowSensor         |
+| sensor | measurement             | aqi (1)                    |                                                                           | airQualitySensor   |
+| sensor | measurement             | volatile_organic_compounds | ugm3 (2)                                                                  | airQualitySensor   |
+| sensor | measurement             | carbon_dioxide             | ppm (2)                                                                   | airQualitySensor   |
+| sensor | measurement             | carbon_monoxide            | ppm (2)                                                                   | airQualitySensor   |
+| sensor | measurement             | nitrogen_dioxide           | ugm3 (2)                                                                  | airQualitySensor   |
+| sensor | measurement             | ozone                      | ugm3 (2)                                                                  | airQualitySensor   |
+| sensor | measurement             | formaldehyde               | mgm3 (2)                                                                  | airQualitySensor   |
+| sensor | measurement             | radon                      | bqm3 (2)                                                                  | airQualitySensor   |
+| sensor | measurement             | pm1                        | ugm3 (2)                                                                  | airQualitySensor   |
+| sensor | measurement             | pm25                       | ugm3 (2)                                                                  | airQualitySensor   |
+| sensor | measurement             | pm10                       | ugm3 (2)                                                                  | airQualitySensor   |
 
 (1) - If the air quality entity is not standard (e.g. state class = measurement, device class = aqi and state number range 0-500), it is possible to set a regexp. See below.
 
@@ -139,17 +182,45 @@ These domains are supported also like device entities and split entities.
 
 (3) - Must be an entity that belongs to a device. Battery alone is not a device in Matter.
 
+Non-energy measurement sensors also work without `state_class` (statistics metadata).
+Pressure additionally accepts Pa, bar, mbar, mmHg, and psi. Electrical measurements are converted to Matter integer milli-units, and flow to tenths of m³/h. Unsupported units, non-finite measurements, and out-of-range flow values are rejected rather than guessed.
+
+### Compatibility expansion status
+
+Manual fan percentage feedback now updates both Matter `percentCurrent` and
+`percentSetting`. If HA rounds a request such as 29% to a supported 20% step,
+the setting follows HA's accepted value. Percentage service completion also
+reconciles the latest HA cache when the accepted value was already current and
+HA emits no state-change event. Older service completions do not override a newer
+pending percentage request. Auto and unrecognized presets retain separate speed
+telemetry; only no preset or low/medium/high/manual/normal/favorite/favourite
+presets synchronize the manual target. Unavailable and invalid readings do not
+fabricate a speed. This needs the rebuilt plugin installed and restarted;
+Apple Home display behavior still needs verification on the paired controller.
+
+The additional mappings are covered by automated tests, including Matter endpoint initialization, using Matterbridge 3.10.10 and Node.js 24.14.0. Physical Home Assistant devices and controller pairing still require deployment-specific validation. This is not a claim of full Matter device-type coverage or CHIP certification.
+
+- Vacuum ServiceArea selection stores areas; changing RVC run mode to Cleaning starts `vacuum.clean_area` for the selection. An empty selection uses `vacuum.start`. Home Assistant must advertise CLEAN_AREA and support the selected area IDs. Map images are available in the plugin web dashboard described below; map pixels and per-area progress are not transported over Matter. Invalid or ambiguous area registries disable ServiceArea with a warning instead of preventing the vacuum from initializing.
+- Climate fan control maps the standard `low`, `medium`, `high`, and `auto` names. Integration-specific aliases and percentage control are not implemented. Unsupported fan mode writes do not turn off the thermostat.
+- Media volume is an additional LevelControl cluster on the existing media endpoint, not a separate Matter Speaker device. Controller discovery and mute semantics still need a dedicated implementation.
+- Covers exposing both SET_POSITION and SET_TILT_POSITION receive lift/tilt positioning. Tilt-only devices are not yet supported.
+- Light effects use ModeSelect with stable advertised labels even if Home Assistant reorders its effect list. Removed effects are ignored; new effects require rebuilding the endpoint.
+
+Development dependencies are pinned in `package-lock.json`, including Matterbridge. Use `npm ci` with a supported Node.js version (`nvm use` selects the checked-in development version), then `npm run build`, `npm run typecheck`, `npm run lint`, and `npm test`. Do not run `npm run link` unless intentionally testing a different global Matterbridge checkout: it replaces the pinned local development dependency. `npm run softReset` now preserves the local dependency rather than linking a potentially incompatible global installation.
+
+Protocol reference: [connectedhomeip data model](https://github.com/project-chip/connectedhomeip/tree/master/data_model). Home Assistant units and capabilities follow the [sensor](https://developers.home-assistant.io/docs/core/entity/sensor/) and [cover](https://developers.home-assistant.io/docs/core/entity/cover/) entity contracts.
+
 ## Supported binary_sensors:
 
-| Domain        | Supported device class (1)           | Matter device type  |
-| ------------- | ------------------------------------ | ------------------- |
-| binary_sensor | window, garage_door, door, vibration | contactSensor       |
-| binary_sensor | motion, occupancy, presence          | occupancySensor     |
-| binary_sensor | cold                                 | waterFreezeDetector |
-| binary_sensor | moisture                             | waterLeakDetector   |
-| binary_sensor | smoke                                | smokeCoAlarm        |
-| binary_sensor | carbon_monoxide                      | smokeCoAlarm        |
-| binary_sensor | battery                              | powerSource         |
+| Domain        | Supported device class (1)                    | Matter device type  |
+| ------------- | --------------------------------------------- | ------------------- |
+| binary_sensor | window, garage_door, door, opening, vibration | contactSensor       |
+| binary_sensor | motion, occupancy, presence                   | occupancySensor     |
+| binary_sensor | cold                                          | waterFreezeDetector |
+| binary_sensor | moisture                                      | waterLeakDetector   |
+| binary_sensor | smoke                                         | smokeCoAlarm        |
+| binary_sensor | carbon_monoxide                               | smokeCoAlarm        |
+| binary_sensor | battery                                       | powerSource         |
 
 (1) - A binary_sensor without a device class is exposed like a generic contactSensor.
 
@@ -333,6 +404,31 @@ In addition to this well known bugs, the rvc must be a single device, it cannot 
 
 If enabled (default), the plugin discards entities that are hidden in Home Assistant (i.e. entities whose `hidden_by` field is not `null` in the entity registry). Hidden entities will not be exposed as device entities, individual entities, or split entities.
 
+### Apple Home Media Command Switches
+
+Enable this option (`mediaPlayerControlsOnly`) and restart Matterbridge to expose
+eligible `media_player` entities as command switches without their direct Matter
+media-player endpoint. This avoids exposing the unsupported media device type to
+Apple Home. No Virtual Control Label or per-player HA label assignment is needed.
+Area, label, domain, device and entity filters still apply; do not blacklist the
+media-player domain to enable this mode. Individual, device and split entities
+follow the same behavior.
+
+Only advertised commands are created: power, play/pause/stop, previous/next,
+mute/unmute and volume steps. Mute and unmute send explicit `is_volume_muted`
+arguments. Commands check current availability and features before execution.
+Offline discovery, including restored/unknown states, uses the last known
+capabilities when available; if none are known, bring the player online and
+restart the plugin. Long or duplicate player names receive a stable suffix
+within Matter's name limit. A failed control registration is logged without
+preventing the remaining controls from registering.
+
+The option defaults to off, preserving native media endpoints and existing
+label-based controls. It applies to every controller using this bridge and does
+not add a Now Playing tile, media browsing or AirPlay. Existing controllers may
+retain a cached old accessory after the endpoint layout changes; restarting
+cannot make the old media type supported.
+
 ### Virtual Control Label
 
 Label used to enable virtual controls on entities. If set, the plugin creates one virtual control for each entity with the selected label. These virtual controls are intended for accessibility and let you send commands to entities that are not directly supported by the controller, such as `media_player.samsung_tv`, with simple voice-friendly switches. Virtual controls are exposed as switch entities: turning one on triggers the command, and the plugin automatically turns it off again afterward.
@@ -393,6 +489,16 @@ See also the [Style Guide](./STYLEGUIDE.md) for JSDoc, naming, and logging conve
 
 ## Repository toolchain
 
+### Automatic GitHub releases
+
+Every push to `master` runs `.github/workflows/release.yml`. It reads `version` from `matterbridge-hass.config.json` and creates a GitHub Release with a `v`-prefixed tag (for example, `1.0.0` becomes `v1.0.0`) at the pushed commit, with automatically generated release notes. Increment this config version before pushing a new release. The version must be valid SemVer; versions such as `1.1.0-beta.1` produce prereleases.
+
+The workflow builds the plugin and uses `npm pack` to attach an installable `matterbridge-hass-<version>.tgz` under release Assets. The archive includes compiled JavaScript, type declarations, plugin config/schema and the checked-in frontend files. Its package version matches the Matterbridge config version; this adjustment happens only in the CI checkout. Runtime dependencies are installed by npm when installing the archive and are not bundled, so installation requires registry access.
+
+Download the `.tgz` asset (not GitHub’s source-code archive), then install it with `npm install -g ./matterbridge-hass-<version>.tgz`, or upload it through Matterbridge’s plugin installation UI.
+
+New releases remain drafts until the tarball upload succeeds. Rerunning a failed workflow retries the upload; a published release that already has the tarball is skipped. An existing release missing its asset can receive it only from the same tagged commit. Existing tags on another commit cause a failure: bump the config version for a new release. The workflow uses the built-in `GITHUB_TOKEN` with `contents: write` and needs no additional secret. It does not publish to npm or trigger the existing release-event npm workflow. Build and package-content validation must succeed before release creation; test CI runs separately.
+
 > **Note:** This repository uses a new toolchain. It replaces the traditional TypeScript / ESLint / Prettier / Jest stack with a faster and lighter setup.
 
 - **No `typescript 6.x` package** — replaced by [TypeScript Native 7.x](https://github.com/microsoft/typescript-go).
@@ -440,3 +546,59 @@ See also the [Style Guide](./STYLEGUIDE.md) for JSDoc, naming, and logging conve
 Refer to the Matterbridge [Development guide](https://matterbridge.io/README-DEV.html) for other guidelines.
 
 ---
+
+### Vacuum maps and Xiaomi Home (MIoT) controls
+
+Open the plugin frontend from Matterbridge, or visit `/plugins/matterbridge-hass/` on your Matterbridge server. The dashboard lists vacuum entities selected by this plugin, offers supported start/resume, pause, stop, dock, locate, spot-clean and fan-speed controls, and displays same-device sensors, select entities and action buttons. Xiaomi Home exposes MIoT properties/actions through these HA entities, so labels and choices come from your actual integration rather than model-specific hardcoded MIoT IDs. Disabled/hidden companion entities are excluded. A successful command means HA accepted the service call; device state is updated separately.
+
+The dashboard requests images every 10 seconds while visible. It offers `image` and `camera` entities attached to the vacuum's HA device as map sources. In **Matterbridge → Plugins → matterbridge-hass → Settings**, set **Vacuum Map Regex**, just like Air Quality Regex, for example `^(image|camera)\..*(live_map|vacuum_map)$`. With exactly one selected vacuum this finds matching entities on a separate Xiaomi Cloud Map Extractor device as well. With multiple vacuums the regex does not guess associations across devices. Leave it empty for same-device discovery. Invalid patterns are logged and ignored. Restart the plugin after saving settings.
+
+For multiple vacuums or an exact override, use **Vacuum Map Entities** in the same Settings screen (key = vacuum entity ID, value = map entity ID). The equivalent configuration is:
+
+```json
+"vacuumMapEntities": {
+  "vacuum.my_xiaomi": "camera.my_xiaomi_map"
+}
+```
+
+Use your actual entity IDs. This mapping takes precedence over automatic discovery. The image source must already work in Home Assistant. The server retrieves the image using the existing HA credentials and TLS configuration; tokens and image access URLs are not sent to the browser. Requests are restricted to HA's image/camera proxy endpoints, reject redirects, and are bounded to 8 MiB and 10 seconds.
+
+Paths, cleaned zones and room labels are retained from the source image. Robot position can also be overlaid from calibrated map attributes as described below. Same-device sensors show room/status/progress when provided by the integration. The dashboard does not invent coordinates or decode proprietary map payloads. Calibrated position overlays and opt-in point navigation are described below; zone drawing is not implemented. The displayed image receipt time is not the robot's measurement time. Upstream image refresh may be slower than dashboard polling. Protect the Matterbridge frontend with its normal access controls because the page exposes device controls and floor plans.
+
+Xiaomi protocol findings (checked September 2026):
+
+- [Official Xiaomi Home](https://github.com/XiaoMi/ha_xiaomi_home) uses MIoT-Spec-V2. It supports cloud commands, central-hub local control, and optional LAN control for compatible IP devices. Its documentation cautions that LAN control can cause abnormalities. The plugin reuses this HA integration's chosen transport; it does not establish a second Xiaomi login or direct robot socket.
+- [Xiaomi Home vacuum implementation](https://github.com/XiaoMi/ha_xiaomi_home/blob/main/custom_components/xiaomi_home/vacuum.py) exposes standard vacuum actions and fan levels. This does not guarantee a map image: a model-compatible map integration is needed if no image/camera entity exists. `xiaomi_home` and the third-party `xiaomi_miot` integration are distinct.
+- [Xiaomi Miio](https://www.home-assistant.io/integrations/xiaomi_miio/) has model-specific zone, segment, coordinate and remote-control actions. Compatibility must be verified using the exact hardware model (for example `xiaomi.vacuum.…`); these actions and MIoT service/action IDs cannot safely be assumed for all Xiaomi-branded robots.
+
+No new robot firmware, LAN-control setting or HA integration is installed automatically. Real-device map availability and action execution require validation with your model and HA setup.
+
+MIoT JSON sensors containing `rooms`, `map_array` and `user_labels` are displayed as room names, map labels and saved preset room lists. These describe rooms and presets rather than a reconstructed floor plan; opt-in command bindings can enable room/preset actions. `map_uid`, `map_id` and room IDs are not interchangeable.
+
+For `xiaomi.vacuum.d102gl` (X20 Pro), keep an existing Xiaomi Cloud Map Extractor live image as the map source. A [model-specific protocol investigation](https://github.com/AldenDana/ha-xiaomi-vacuum-x20pro/blob/master/docs/METHOD.md) reports room cleaning and preset actions, with firmware-dependent acknowledgement and payload quirks. These findings are not validation of this user's firmware. This dashboard uses standard HA services and configurable Virtual Layer command bindings; it does not replay raw model-specific RPCs directly. A map/trajectory `obj_name` is an object identifier, not an image URL or a robot position.
+
+#### Using a Virtual Layer robot vacuum
+
+When using `home-assistant-virtual-layer`, select the virtual `vacuum.*` entity in this plugin. All dashboard commands target that entity, so Virtual Layer's configured Command actions remain responsible for forwarding them to the real Xiaomi/MIoT vacuum. A source reference does not cause this plugin to bypass Virtual Layer. Configure those actions in the Virtual Layer UI; an optimistic virtual state change alone does not confirm physical robot execution.
+
+Keep the virtual map `image.*` or `camera.*` on the same Virtual Layer Device for automatic discovery. A Virtual Layer camera alias of a raster map image can be used through the camera proxy too. If the map remains on a different Device, use **Vacuum Map Regex** (one selected vacuum) or **Vacuum Map Entities** (explicit association); the mapping key is the virtual vacuum ID. Select/button controls and sensors must be on the virtual Device to appear as companions. Generated battery sensors are shown in the sensor list, and `battery_level` is displayed when the virtual vacuum provides it.
+
+The dashboard follows the virtual entity's live `supported_features` and `fan_speed_list`, including `clean_spot` when advertised. Arbitrary `send_command` payloads and `clean_area` are not inferred from Virtual Layer's default feature set. The map must supply raster image bytes; generic SVG polygon maps are not supported by this image proxy.
+
+#### Robot position and advanced Virtual Layer controls
+
+The selected map's attributes can now provide a robot marker, current room and coordinates. Enable/expose `vacuum_position` (`{x,y}`), `vacuum_room_name` or `vacuum_room`, `calibration_points`, and `image` on your map source. The [Map Extractor source](https://github.com/PiotrMachowski/Home-Assistant-custom-components-Xiaomi-Cloud-Map-Extractor/blob/master/custom_components/xiaomi_cloud_map_extractor/common/map_data.py) defines calibration as three `{vacuum:{x,y},map:{x,y}}` pairs; `image` supplies `width`, `height`, `scale`, and `rotation` (0/90/180/270). Coordinates retain the source's units; the bridge does not assume millimetres.
+
+Use the original map image, or a Virtual Layer alias that preserves these attributes and the exact image geometry. A resized/letterboxed camera image needs its own transformed calibration and image dimensions. The browser suppresses markers/navigation when intrinsic image dimensions disagree. Position text remains available without calibration. Data older than 120 seconds is labelled stale and cannot be used for navigation. HA `last_updated` is the freshness signal, not a guarantee of when the robot measured its location.
+
+In plugin **Settings → Vacuum Control Bindings**, add the virtual vacuum ID and only the commands actually handled by its Virtual Layer `send_command` action:
+
+| Setting       | Example command name | Delivered `params`                                           |
+| ------------- | -------------------- | ------------------------------------------------------------ |
+| `goTo`        | `go_to`              | `{ "x": 250, "y": 750 }` in vacuum coordinates               |
+| `cleanRooms`  | `clean_rooms`        | `{ "rooms": [60, 62] }` using current MIoT room IDs          |
+| `startPreset` | `start_preset`       | `{ "preset_id": 1120474997 }` using the full saved preset ID |
+
+The names above are a **configurable Virtual Layer contract**, not Xiaomi protocol commands. Leave unsupported actions empty. The bridge exposes these actions only on `virtual_layer` vacuum entities advertising `SEND_COMMAND`. In Virtual Layer Command actions, route `send_command` to your verified device action/script. Use `command_data.command` for the configured command name and `command_data.params` for its parameters; the action engine's top-level `command` variable is the method name `send_command`. Forwarding or recording an unknown command by itself does not implement robot navigation. A successful HA service response is not physical execution confirmation. Use the reported activity/location to verify execution; the bridge does not retry motion commands automatically.
+
+On the dashboard, click the map to select a destination, then press **선택 위치로 이동**. Image pixels are converted to vacuum coordinates on the server. Current map revision, freshness, dimensions and calibration are rechecked before dispatch. New map metadata invalidates a pending destination. Room checkboxes and saved preset buttons appear when their bindings and metadata are available. Empty/unknown/duplicate room selections, unknown presets and obsolete room/map revisions are rejected. Room IDs are not HA area IDs. No actual robot commands are sent during startup, discovery, or automated tests.

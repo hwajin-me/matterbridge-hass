@@ -1,0 +1,127 @@
+name: Release on master push
+
+on:
+  push:
+    branches:
+      - master
+      - main
+
+concurrency:
+  group: github-release-master
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout pushed commit
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24.x'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-fund --no-audit
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Pack installable tarball
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const config = JSON.parse(fs.readFileSync('matterbridge-hass.config.json', 'utf8'));
+          pkg.version = config.version;
+          delete pkg.scripts;
+          delete pkg.devDependencies;
+          delete pkg.automator;
+          fs.writeFileSync('package.json', `${JSON.stringify(pkg, null, 2)}\n`);
+          NODE
+          npm pack --ignore-scripts --json > "$RUNNER_TEMP/release-pack.json"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const [pack] = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'release-pack.json'), 'utf8'));
+          const files = new Set(pack.files.map(file => file.path));
+          for (const required of ['dist/module.js', 'dist/module.d.ts', 'matterbridge-hass.config.json', 'matterbridge-hass.schema.json', 'apps/frontend/build/index.html', 'apps/frontend/build/dashboard.js', 'apps/frontend/build/style.css']) {
+            if (!files.has(required)) throw new Error(`Missing required package file: ${required}`);
+          }
+          NODE
+
+      - name: Upload tarball and publish release
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('node:fs');
+            const { version } = JSON.parse(fs.readFileSync('matterbridge-hass.config.json', 'utf8'));
+            const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
+            const match = typeof version === 'string' && semver.exec(version);
+            if (!match) {
+              throw new Error('matterbridge-hass.config.json must contain a valid SemVer version');
+            }
+
+            const tag = `v${version}`;
+            const repo = context.repo;
+            const path = require('node:path');
+            const [pack] = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'release-pack.json'), 'utf8'));
+            let release;
+            try {
+              ({ data: release } = await github.rest.repos.getReleaseByTag({ ...repo, tag }));
+              if (!release.draft && release.assets.some(asset => asset.name === pack.filename && asset.state === 'uploaded')) {
+                core.info(`Release ${tag} already has its tarball; skipping`);
+                return;
+              }
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            // Never attach a new release to a pre-existing tag on another commit.
+            try {
+              const { data } = await github.rest.repos.getCommit({ ...repo, ref: `tags/${tag}` });
+              if (data.sha !== context.sha) {
+                throw new Error(`Tag ${tag} already points to another commit; bump the config version`);
+              }
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            if (release?.draft && release.target_commitish !== context.sha) {
+              throw new Error(`Draft ${tag} belongs to another commit; bump the config version`);
+            }
+
+            if (!release) ({ data: release } = await github.rest.repos.createRelease({
+              ...repo,
+              tag_name: tag,
+              target_commitish: context.sha,
+              name: tag,
+              generate_release_notes: true,
+              prerelease: Boolean(match[4]),
+              draft: true,
+            }));
+
+            // Replace an incomplete upload when retrying a failed run.
+            const existingAsset = release.assets.find(asset => asset.name === pack.filename);
+            if (existingAsset) {
+              await github.rest.repos.deleteReleaseAsset({ ...repo, asset_id: existingAsset.id });
+            }
+            await github.rest.repos.uploadReleaseAsset({
+              ...repo,
+              release_id: release.id,
+              name: pack.filename,
+              data: fs.readFileSync(pack.filename),
+              headers: { 'content-type': 'application/gzip' },
+            });
+            if (release.draft) {
+              await github.rest.repos.updateRelease({ ...repo, release_id: release.id, draft: false });
+            }
+            core.info(`Published ${release.html_url} with ${pack.filename}`);

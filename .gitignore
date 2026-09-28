@@ -27,3 +27,9 @@ temp/
 TODO.md
 ts_homeassistant.json
 certificates/serverToken
+.idea
+.serena
+
+# The dependency-free plugin frontend is shipped directly.
+!apps/frontend/build/
+!apps/frontend/build/**

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>로봇청소기 · Matterbridge</title>
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./dashboard.js"></script>
+</head>
+<body>
+  <main>
+    <header><p class="eyebrow">MATTERBRIDGE / HOME ASSISTANT</p><h1>로봇청소기</h1><p>지도와 청소 상태를 확인하고 기기를 제어하세요.</p></header>
+    <p id="connection" role="status">연결 중…</p>
+    <label>청소기 <select id="vacuum"></select></label>
+    <article id="metadata" style="margin-top:24px" hidden><h2>방 · 지도 · 저장된 청소</h2><div id="metadata-content"></div><p class="hint">방 ID와 지도 ID는 별도 정보입니다. 목록은 공간 배치나 현재 청소 위치를 의미하지 않습니다.</p></article>
+    <section class="layout">
+      <article><h2>청소 지도</h2><label>지도 소스 <select id="map"></select></label><p id="map-status" role="status"></p><div id="map-frame"><img id="map-image" hidden alt="Home Assistant가 제공한 청소 지도. 위치·경로 표시는 지도 연동의 지원 여부에 따라 달라집니다."><span id="robot-marker" hidden aria-label="로봇 위치">●</span><span id="target-marker" hidden aria-label="선택한 목적지">＋</span></div><p id="location" role="status"></p><p id="target-status" role="status">지도에서 목적지를 선택한 뒤 이동 버튼을 누르세요.</p><button id="go-to" disabled>선택 위치로 이동</button><p class="hint">위치·경로는 지도 제공 연동에서 지원해야 합니다. 지도는 10초마다 요청하며 실제 최신화 주기는 Home Assistant 연동에 따라 달라집니다.</p></article>
+      <article><h2 id="name">청소기 제어</h2><p id="state"></p><p id="model" class="hint"></p><div id="commands" class="buttons"></div><div id="fan"></div><p id="command-status" role="status"></p><h3>방 청소 · 프리셋</h3><div id="advanced-controls"></div><h3>추가 제어</h3><div id="controls"></div></article>
+    </section>
+    <article><h2>기기 상태</h2><p class="hint">같은 HA 기기에 연결된 센서입니다. 현재 청소 위치·면적·진행률은 연동이 제공하는 경우 여기에 표시됩니다.</p><dl id="sensors"></dl></article>
+  </main>
+</body>
+</html>

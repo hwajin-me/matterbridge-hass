@@ -11,6 +11,7 @@ import { AirQuality, FanControl, Thermostat } from 'matterbridge/matter/clusters
 
 import {
   clamp,
+  convertClimateSetpoint,
   convertHAFanPresetModeToMatter,
   convertHAFanPresetModesToMatter,
   convertHAXYToMatter,
@@ -54,6 +55,72 @@ function createSelectState(options: string[]): HassState {
 }
 
 describe('HassPlatform converters', () => {
+  it('should honor climate steps, bounds and entity temperature units', () => {
+    const state = createSelectState([]);
+    Object.assign(state.attributes, { temperature_unit: '°C', min_temp: 16, max_temp: 30, target_temp_step: 1 });
+    expect(convertClimateSetpoint(2250, state)).toBe(23);
+    expect(convertClimateSetpoint(1500, state)).toBe(16);
+    expect(convertClimateSetpoint(3100, state)).toBe(30);
+    state.attributes.target_temp_step = 0.5;
+    expect(convertClimateSetpoint(2250, state)).toBe(22.5);
+    expect(convertClimateSetpoint(2220, state)).toBe(22);
+    state.attributes.target_temp_step = 0;
+    expect(convertClimateSetpoint(2220, state)).toBe(22.2);
+    expect(convertClimateSetpoint(Number.NaN, state)).toBeUndefined();
+    Object.assign(state.attributes, { temperature_unit: '°F', min_temp: 60, max_temp: 86, target_temp_step: 1 });
+    expect(convertClimateSetpoint(2250, state)).toBe(73);
+  });
+
+  it('should synchronize single climate targets while off without stale range overrides', () => {
+    const state = createSelectState([]);
+    state.state = 'off';
+    Object.assign(state.attributes, { temperature_unit: '°C', hvac_modes: ['cool', 'off'], temperature: 23, target_temp_high: 28 });
+    const target = hassUpdateAttributeConverter.find((entry) => entry.domain === 'climate' && entry.with === 'temperature' && entry.attribute === 'occupiedCoolingSetpoint');
+    const range = hassUpdateAttributeConverter.find((entry) => entry.domain === 'climate' && entry.with === 'target_temp_high');
+    expect(target?.converter(23, state)).toBe(2300);
+    expect(range?.converter(28, state)).toBeNull();
+    state.state = 'heat_cool';
+    expect(target?.converter(23, state)).toBeNull();
+    expect(range?.converter(28, state)).toBe(2800);
+  });
+
+  it('should preserve advertised light effect IDs when Home Assistant reorders effects', () => {
+    const converter = hassCommandConverter.find((entry) => entry.domain === 'light' && entry.command === 'changeToMode')?.converter;
+    const state = createSelectState([]);
+    state.attributes.effect_list = ['Sunset', 'Waves'];
+    const attributes = {
+      supportedModes: [
+        { mode: 1, label: 'Waves' },
+        { mode: 2, label: 'Sunset' },
+      ],
+    };
+    expect(converter?.({ newMode: 1 }, attributes, state)).toEqual({ effect: 'Waves' });
+    expect(converter?.({ newMode: 2 }, attributes, state)).toEqual({ effect: 'Sunset' });
+    expect(converter?.({ newMode: 3 }, attributes, state)).toBeUndefined();
+    state.attributes.effect_list = ['Sunset'];
+    expect(converter?.({ newMode: 1 }, attributes, state)).toBeUndefined();
+  });
+
+  it.each([0, 127, 254])('should map media level %s to volume rather than brightness', (level) => {
+    const converter = hassCommandConverter.find((entry) => entry.domain === 'media_player' && entry.command === 'moveToLevel')?.converter;
+    expect(converter?.({ level }, {})).toEqual({ volume_level: level / 254 });
+    expect(converter?.({ level: 255 }, {})).toBeUndefined();
+    expect(converter?.({ level: -1 }, {})).toBeUndefined();
+  });
+
+  it('should ignore unsupported climate fan and HVAC modes instead of turning off', () => {
+    const state = createSelectState([]);
+    state.attributes.fan_modes = ['auto', 'low'];
+    state.attributes.hvac_modes = [HVACMode.HEAT, HVACMode.OFF];
+    const fanConverter = hassSubscribeConverter.find((entry) => entry.domain === 'climate' && entry.with === 'fan_mode')?.converter;
+    const modeConverter = hassSubscribeConverter.find((entry) => entry.domain === 'climate' && entry.with === 'hvac_mode')?.converter;
+    expect(fanConverter?.(FanControl.FanMode.Low, state)).toBe('low');
+    expect(fanConverter?.(FanControl.FanMode.High, state)).toBeUndefined();
+    expect(fanConverter?.(FanControl.FanMode.Off, state)).toBeUndefined();
+    expect(modeConverter?.(Thermostat.SystemMode.Cool, state)).toBeUndefined();
+    expect(modeConverter?.(Thermostat.SystemMode.Heat, state)).toBe('heat');
+    expect(modeConverter?.(Thermostat.SystemMode.Off, state)).toBeNull();
+  });
   it('should return the feature names for supported features', () => {
     expect(getFeatureNames(FanEntityFeature, 0)).toEqual([]);
     // oxlint-disable-next-line unicorn/no-useless-undefined
@@ -268,17 +335,17 @@ describe('HassPlatform converters', () => {
         expect(converter.converter(29.4, 'inHg')).toBe(996);
         expect(converter.converter(14.5038, 'psi')).toBe(1000);
         expect(converter.converter(29.4)).toBe(null);
-        expect(converter.converter(0, 'inHg')).toBe(null);
+        expect(converter.converter(0, 'inHg')).toBe(0);
       } else if (converter.withStateClass === 'measurement' && converter.withDeviceClass === 'voltage' && converter.deviceType === powerSource) {
         expect(converter.converter(32, 'mV')).toBe(32);
         expect(converter.converter(1.5, 'V')).toBe(1500);
         expect(converter.converter(-40, 'V')).toBe(null);
       } else if (converter.withStateClass === 'measurement' && converter.withDeviceClass === 'voltage' && converter.deviceType === electricalSensor) {
         expect(converter.converter(32, 'V')).toBe(32000);
-        expect(converter.converter(212, 'mV')).toBe(null);
+        expect(converter.converter(212, 'mV')).toBe(212);
       } else if (converter.withStateClass === 'total_increasing' && converter.withDeviceClass === 'energy' && converter.deviceType === electricalSensor) {
         expect(converter.converter(32, 'kWh')).toEqual({ energy: 32000000 });
-        expect(converter.converter(212, 'Wh')).toBe(null);
+        expect(converter.converter(212, 'Wh')).toEqual({ energy: 212000 });
       } else if (converter.withStateClass === 'measurement' && converter.withDeviceClass === 'power' && converter.deviceType === electricalSensor) {
         expect(converter.converter(32, 'W')).toBe(32000);
         expect(converter.converter(212, 'Wh')).toBe(null);
@@ -315,6 +382,10 @@ describe('HassPlatform converters', () => {
         expect(converter.converter('GOOD')).toBe(AirQuality.AirQualityEnum.Good); // Test case insensitive
         expect(converter.converter('unknown')).toBe(null);
         expect(converter.converter('invalid')).toBe(null);
+      } else if (converter.withDeviceClass === 'volume_flow_rate') {
+        expect(converter.converter(0, 'L/min')).toBe(0);
+        expect(converter.converter(1, 'm³/h')).toBe(10);
+        expect(converter.converter(0)).toBeNull();
       } else if (converter.withStateClass === 'measurement') {
         // console.warn(`Converter for ${converter.domain} with state class ${converter.withStateClass} and device class ${converter.withDeviceClass}`);
         expect(converter.converter(0)).not.toBe(null);
@@ -351,10 +422,10 @@ describe('HassPlatform converters', () => {
       if (converter.converter && converter.domain === 'valve' && converter.service === 'set_valve_position') {
         expect(converter.converter({ targetLevel: 0 }, {})).toEqual({ position: 0 });
       }
-      if (converter.converter && converter.command === 'moveToLevel') {
+      if (converter.converter && converter.domain === 'light' && converter.command === 'moveToLevel') {
         expect(converter.converter({ level: 254 }, undefined as any, undefined as any)).toEqual({ brightness: 255 });
       }
-      if (converter.converter && converter.command === 'moveToLevelWithOnOff') {
+      if (converter.converter && converter.domain === 'light' && converter.command === 'moveToLevelWithOnOff') {
         expect(converter.converter({ level: 56 }, undefined as any, undefined as any)).toEqual({ brightness: 56 });
       }
       if (converter.converter && converter.command === 'moveToColorTemperature') {
@@ -407,11 +478,17 @@ describe('HassPlatform converters', () => {
         expect(converter.converter(FanControl.FanMode.Smart)).toBe('auto');
         // oxlint-disable-next-line typescript/no-deprecated
         expect(converter.converter(FanControl.FanMode.On)).toBe('auto');
-        expect(converter.converter(10)).toBe(null);
+        expect(converter.converter(10)).toBeNull();
       }
       if (converter.domain === 'fan' && converter.service === 'turn_on' && converter.with === 'percentage' && converter.converter) {
         expect(converter.converter(0)).toBe(null);
         expect(converter.converter(10)).toBe(10);
+        const state = createSelectState([]);
+        state.attributes.percentage_step = 20;
+        expect(converter.converter(29, state)).toBe(20);
+        expect(converter.converter(30, state)).toBe(40);
+        expect(converter.converter(1, state)).toBe(20);
+        expect(converter.converter(0, state)).toBeNull();
       }
       if (converter.domain === 'fan' && converter.service === 'set_direction' && converter.converter) {
         expect(converter.converter(FanControl.AirflowDirection.Forward)).toBe('forward');
@@ -426,7 +503,7 @@ describe('HassPlatform converters', () => {
         expect(converter.converter(Thermostat.SystemMode.Cool)).toBe('cool');
         expect(converter.converter(Thermostat.SystemMode.Heat)).toBe('heat');
         expect(converter.converter(Thermostat.SystemMode.Off)).toBe(null);
-        expect(converter.converter(10)).toBe(null);
+        expect(converter.converter(10)).toBeUndefined();
       }
       if (converter.domain === 'climate' && converter.service === 'set_temperature' && converter.converter) {
         HomeAssistant.hassConfig = {
