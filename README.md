@@ -314,7 +314,7 @@ Filter devices and individual entities by area. If enabled, only devices, indivi
 
 ### Filter By Label
 
-Filter devices and individual entities by label. If enabled, only devices, individual entities, and split entities with the selected label will be exposed. If disabled, all devices, individual entities, and split entities will be exposed. A device is also exposed if it has any entities that satisfy the filters.
+Filter devices and individual entities by label. If enabled, only devices, individual entities, and split entities with the selected label will be exposed. If disabled, all devices, individual entities, and split entities will be exposed. A device is also exposed if it has any entities that satisfy the filters. A label on a device allows its eligible entities; a label on an entity allows that entity even when its device has no label. In the latter case, unlabeled siblings remain excluded. Adding an entity label does not revoke exposure granted by a device label. Split entities accept the label from either the entity or its device.
 
 ### Whitelist
 

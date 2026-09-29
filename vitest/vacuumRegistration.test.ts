@@ -27,7 +27,7 @@ async function scan(
   split: boolean,
   companions: boolean,
   individual = false,
-  labelScenario?: { sameName: boolean; exposeCompanions: boolean; postfix?: string },
+  labelScenario?: { sameName: boolean; exposeCompanions: boolean; postfix?: string; splitByLabel?: boolean; deviceLabel?: boolean },
 ): Promise<{ registered: MatterbridgeEndpoint[]; platform: HomeAssistantPlatform; errors: unknown[][]; vacuumId: string }> {
   const directory = await mkdtemp(path.join(tmpdir(), 'vacuum-registration-'));
   const log = new AnsiLogger({ logName: 'VacuumRegistration', logLevel: LogLevel.ERROR });
@@ -115,7 +115,8 @@ async function scan(
     platform.config.namePostfix = labelScenario.postfix ?? '';
     platform.config.filterByArea = '';
     platform.config.filterByLabel = expose.name;
-    platform.config.splitByLabel = splitLabel.name;
+    platform.config.splitByLabel = labelScenario.splitByLabel === false ? '' : splitLabel.name;
+    if (labelScenario.deviceLabel) device.labels = [expose.label_id];
     platform.config.splitEntities = [];
   }
   try {
@@ -138,6 +139,25 @@ describe('vacuum startup registration', () => {
     expect(errors).toEqual([]);
     expect(platform.matterbridgeDevices.has(vacuumId)).toBe(true);
     expect(platform.matterbridgeDevices.get(vacuumId)?.deviceName).toBe(`Robot Vacuum${exposeCompanions ? ` (${vacuumId})` : ''}${postfix ? ` ${postfix}` : ''}`);
+  });
+
+  it.each([false, true])('should expose entity-only labels with splitByLabel=%s and exclude unlabeled siblings', async (splitByLabel) => {
+    const { platform, errors, vacuumId } = await scan('Merge', false, true, false, { sameName: false, exposeCompanions: false, splitByLabel });
+    expect(errors).toEqual([]);
+    expect(platform.endpointNames.has(vacuumId)).toBe(true);
+    expect([...platform.endpointNames.keys()].filter((id) => id.startsWith('select.'))).toEqual([]);
+  });
+
+  it('should keep device-labeled siblings exposed when only the vacuum also has an entity label', async () => {
+    const { platform, errors, vacuumId } = await scan('Merge', false, true, false, {
+      sameName: false,
+      exposeCompanions: false,
+      splitByLabel: false,
+      deviceLabel: true,
+    });
+    expect(errors).toEqual([]);
+    expect(platform.endpointNames.has(vacuumId)).toBe(true);
+    expect([...platform.endpointNames.keys()].some((id) => id.startsWith('select.'))).toBe(true);
   });
 
   it.each(['Merge', 'Matter'])('should register an individual server vacuum using %s', async (strategy) => {

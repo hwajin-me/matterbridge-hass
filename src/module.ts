@@ -3,7 +3,7 @@
  * @description This file contains the class HomeAssistantPlatform.
  * @author Luca Liguori
  * @created 2024-09-13
- * @version 1.8.3
+ * @version 1.8.4
  * @license Apache-2.0
  *
  * Copyright 2024, 2025, 2026 Luca Liguori.
@@ -667,7 +667,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       const deviceHasValidLabelFilterEntities = Array.from(this.ha.hassEntities.values()).some((e) => e.device_id === device.id && !isDisabled(e) && satisfiesLabelFilter(this, e));
       if (!satisfiesLabelFilter(this, device) && !deviceHasValidLabelFilterEntities) {
         this.filteredDevices++;
-        this.log.info(`Device ${CYAN}${deviceName}${nf} doesn't have the label "${CYAN}${this.config.filterByLabel}${nf}". Skipping...`);
+        this.log.info(`Device ${CYAN}${deviceName}${nf} (${device.id}) and its enabled entities do not have the label "${CYAN}${this.config.filterByLabel}${nf}". Skipping...`);
         continue;
       }
       // Set the device selects and validate the device.
@@ -752,7 +752,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
           continue;
         }
         // Apply area and label filters before the select and validation
-        if (deviceHasValidLabelFilterEntities && !satisfiesLabelFilter(this, entity)) {
+        if (!satisfiesLabelFilter(this, device) && !satisfiesLabelFilter(this, entity)) {
           this.filteredEntities++;
           this.log.info(`Device ${CYAN}${deviceName}${nf} entity ${CYAN}${entity.entity_id}${nf} doesn't have the label "${CYAN}${this.config.filterByLabel}${nf}". Skipping...`);
           continue;
@@ -761,6 +761,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
         this.setSelectDeviceEntity(device.id, entity.entity_id, entityName, 'component');
         this.setSelectEntity(entityName, entity.entity_id, 'component');
         if (isSplitEntity(this, entity)) {
+          if (domain === 'vacuum') this.log.info(`Vacuum ${entity.entity_id} passed the exposure label filter and will be processed as a split entity.`);
           this.log.debug(`Lookup device ${CYAN}${device.name}${db} entity ${CYAN}${entity.entity_id}${db} name ${CYAN}${entityName}${db} is a splitEntity. Skipping...`);
           continue; // Skip split entities from the main device
         }
@@ -890,6 +891,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       // Get the entity state. If the entity is disabled, it doesn't have a state, we skip it.
       const hassState = this.ha.hassStates.get(entity.entity_id);
       if (!hassState) {
+        if (domain === 'vacuum') this.log.warn(`Split vacuum ${entity.entity_id} cannot be registered: Home Assistant state not found.`);
         this.log.debug(`Split entity ${CYAN}${entity.entity_id}${db} state not found. Skipping...`);
         continue;
       }
@@ -904,6 +906,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       // If the entity doesn't have a valid name, we skip it.
       const entityName = getEntityName(this, entity);
       if (!isValidString(entityName, 1)) {
+        if (domain === 'vacuum') this.log.warn(`Split vacuum ${entity.entity_id} cannot be registered: no valid entity name for ${this.config.splitNameStrategy}.`);
         this.log.debug(`Split entity ${CYAN}${entity.entity_id}${db} has no valid name. Skipping...`);
         continue;
       }
@@ -1025,6 +1028,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
           /* v8 ignore next cause is not testable */
           if (!this.dryRun && !mutableDevice.getEndpoint().owner) throw new Error(`Endpoint not created`);
           this.matterbridgeDevices.set(entity.entity_id, mutableDevice.getEndpoint());
+          if (domain === 'vacuum') this.log.info(`Registered split vacuum ${entity.entity_id} as "${mutableDevice.getEndpoint().deviceName}".`);
           this.endpointNames.set(
             entity.entity_id,
             this.config.controllerStrategy === 'Merge' || mutableDevice.getRemappedEndpoints().has(entity.entity_id) ? '' : entity.entity_id,
