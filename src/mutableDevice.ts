@@ -52,13 +52,7 @@ import {
   type PlatformMatterbridge,
   roboticVacuumCleaner,
 } from 'matterbridge';
-import {
-  MatterbridgeKeypadInputServer,
-  MatterbridgeMediaPlaybackServer,
-  MatterbridgeRvcCleanModeServer,
-  MatterbridgeRvcOperationalStateServer,
-  MatterbridgeRvcRunModeServer,
-} from 'matterbridge/devices';
+import { MatterbridgeRvcCleanModeServer, MatterbridgeRvcOperationalStateServer, MatterbridgeRvcRunModeServer } from 'matterbridge/devices';
 import { AnsiLogger, CYAN, db, debugStringify, idn, ign, type LogLevel, rs, TimestampFormat } from 'matterbridge/logger';
 import { type ActionContext, type AtLeastOne, type Behavior, UINT16_MAX, UINT32_MAX } from 'matterbridge/matter';
 import { BooleanStateServer, BridgedDeviceBasicInformationServer, PowerSourceServer } from 'matterbridge/matter/behaviors';
@@ -69,8 +63,6 @@ import {
   FanControl,
   Groups,
   Identify,
-  KeypadInput,
-  MediaPlayback,
   ModeSelect,
   OnOff,
   PowerSource,
@@ -956,32 +948,6 @@ export class MutableDevice {
     device.clusterServersObjs.push(
       getClusterServerObj(OnOff.id, MatterbridgeOnOffServer.with(), {
         onOff,
-      }),
-    );
-    return this;
-  }
-
-  addBasicVideoPlayer(endpoint: string): this {
-    const device = this.initializeEndpoint(endpoint);
-    device.clusterServersObjs.push(
-      getClusterServerObj(
-        MediaPlayback.id,
-        MatterbridgeMediaPlaybackServer.enable({
-          commands: { next: true, previous: true, skipForward: true, skipBackward: true },
-        }),
-        {
-          currentState: MediaPlayback.PlaybackState.NotPlaying,
-        },
-      ),
-    );
-    return this;
-  }
-
-  addKeypadInput(endpoint: string): this {
-    const device = this.initializeEndpoint(endpoint);
-    device.clusterServersObjs.push(
-      getClusterServerObj(KeypadInput.id, MatterbridgeKeypadInputServer, {
-        // No attributes for this cluster server, it only handles the KeypadInput command.
       }),
     );
     return this;

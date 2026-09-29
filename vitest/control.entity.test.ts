@@ -22,7 +22,7 @@ import { LevelControl } from 'matterbridge/matter/clusters';
 import { addControlEntity } from '../src/control.entity.js';
 import { hassCommandConverter, hassDomainConverter, hassSubscribeConverter } from '../src/converters.js';
 import { generateEntity, generateState } from '../src/helpers.js';
-import { type HassConfig, type HassEntity, type HassState, HomeAssistant, MediaPlayerEntityFeature, MediaPlayerService, UnitOfTemperature } from '../src/homeAssistant.js';
+import { type HassConfig, type HassEntity, type HassState, HomeAssistant, UnitOfTemperature } from '../src/homeAssistant.js';
 import type { MutableDevice } from '../src/mutableDevice.js';
 
 function createMockMutableDevice(): MutableDevice {
@@ -59,15 +59,13 @@ function createMockMutableDevice(): MutableDevice {
     addLiftTiltCover: vi.fn(),
     addSelect: vi.fn(),
     addOnOff: vi.fn(),
-    addBasicVideoPlayer: vi.fn(),
-    addKeypadInput: vi.fn(),
     addCommandHandler: vi.fn(),
     addSubscribeHandler: vi.fn(),
   } as unknown as MutableDevice;
 }
 
 const mockLog = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any;
-const mockPlatform = { config: { virtualControlLabel: '' }, log: mockLog, ha: { hassAreas: new Map() }, environmentControls: new Map(), mediaControlEntities: new Set() } as any;
+const mockPlatform = { config: { virtualControlLabel: '' }, log: mockLog, ha: { hassAreas: new Map() }, environmentControls: new Map() } as any;
 const commandHandler = vi.fn(async () => {}); // async signature required
 const subscribeHandler = vi.fn();
 type VirtualDeviceCallback = () => Promise<void>;
@@ -403,83 +401,11 @@ describe('addControlEntity', () => {
     expect(md.addOnOff).toHaveBeenCalledWith(e.entity_id, true);
   });
 
-  it('configures media players with playback and keypad support', () => {
-    const [md, e, s] = make('media_player', 'tv', { supported_features: 0 });
-
-    const ep = addControlEntity(mockPlatform, md, e, s, commandHandler, subscribeHandler as any);
-
-    expect(ep).toBe(e.entity_id);
-    expect(md.addOnOff).toHaveBeenCalledWith(e.entity_id, true);
-    expect(md.addBasicVideoPlayer).toHaveBeenCalledWith(e.entity_id);
-    expect(md.addKeypadInput).toHaveBeenCalledWith(e.entity_id);
-  });
-
-  it('registers labeled media player virtual controls for supported features', async () => {
-    const [md, e, s] = make('media_player', 'tv', {
-      friendly_name: 'Living Room TV',
-      // oxlint-disable-next-line no-bitwise
-      supported_features: MediaPlayerEntityFeature.TURN_ON | MediaPlayerEntityFeature.VOLUME_STEP,
-    });
-    const callService = vi.fn<() => Promise<void>>().mockResolvedValue();
-    const registerVirtualDevice = vi.fn<(name: string, deviceType: string, callback: VirtualDeviceCallback) => Promise<void>>().mockResolvedValue();
-    const platform = {
-      ...mockPlatform,
-      config: { splitNameStrategy: 'Friendly name', virtualControlLabel: 'Virtual Controls' },
-      ha: {
-        callService,
-        hassEntities: new Map([[e.entity_id, e]]),
-        hassLabels: new Map([['virtual-controls', { label_id: 'virtual-controls', name: 'Virtual Controls' }]]),
-        hassStates: new Map([[e.entity_id, s]]),
-      },
-      registerVirtualDevice,
-    };
-    const entity = { ...e, labels: ['virtual-controls'] };
-
-    addControlEntity(platform, md, entity, s, commandHandler, subscribeHandler as any);
-
-    await vi.waitFor(() => expect(registerVirtualDevice).toHaveBeenCalledTimes(3));
-    expect(registerVirtualDevice).toHaveBeenCalledTimes(3);
-    expect(registerVirtualDevice).toHaveBeenNthCalledWith(1, 'Turn ON Living Room TV', 'mounted_switch', expect.any(Function));
-    expect(registerVirtualDevice).toHaveBeenNthCalledWith(2, 'Volume Down Living Room TV', 'mounted_switch', expect.any(Function));
-    expect(registerVirtualDevice).toHaveBeenNthCalledWith(3, 'Volume Up Living Room TV', 'mounted_switch', expect.any(Function));
-
-    const volumeUpCallback = registerVirtualDevice.mock.calls[2][2];
-    await volumeUpCallback();
-
-    expect(callService).toHaveBeenCalledWith('media_player', MediaPlayerService.VOLUME_UP, e.entity_id);
-  });
-
-  it('logs an error when a labeled media player virtual control service call fails', async () => {
-    const [md, e, s] = make('media_player', 'tv', {
-      friendly_name: 'Living Room TV',
-      supported_features: MediaPlayerEntityFeature.TURN_ON,
-    });
-    const callService = vi.fn<() => Promise<void>>().mockRejectedValue(new Error('boom'));
-    const registerVirtualDevice = vi.fn<(name: string, deviceType: string, callback: VirtualDeviceCallback) => Promise<void>>().mockResolvedValue();
-    const log = { debug: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    const platform = {
-      mediaControlEntities: new Set(),
-      config: { splitNameStrategy: 'Friendly name', virtualControlLabel: 'Virtual Controls' },
-      ha: {
-        callService,
-        hassEntities: new Map([[e.entity_id, e]]),
-        hassLabels: new Map([['virtual-controls', { label_id: 'virtual-controls', name: 'Virtual Controls' }]]),
-        hassStates: new Map([[e.entity_id, s]]),
-      },
-      log,
-      registerVirtualDevice,
-    } as any;
-    const entity = { ...e, labels: ['virtual-controls'] };
-
-    addControlEntity(platform, md, entity, s, commandHandler, subscribeHandler as any);
-
-    const turnOnCallback = registerVirtualDevice.mock.calls[0][2];
-    await expect(turnOnCallback()).rejects.toThrow('boom');
-    await Promise.resolve();
-
-    expect(callService).toHaveBeenCalledWith('media_player', MediaPlayerService.TURN_ON, e.entity_id);
-    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Failed to call turn on service for'));
-    expect(log.error).toHaveBeenCalledWith(expect.stringContaining('Error: boom'));
+  it('should ignore media players without creating endpoints or command switches', () => {
+    const [md, e, s] = make('media_player', 'tv', { supported_features: 448439 });
+    expect(addControlEntity(mockPlatform, md, e, s, commandHandler, subscribeHandler as any)).toBeUndefined();
+    expect(md.addDeviceTypes).not.toHaveBeenCalled();
+    expect(md.addCommandHandler).not.toHaveBeenCalled();
   });
 
   it('registers all command handlers for light domain', () => {

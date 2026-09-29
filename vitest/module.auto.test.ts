@@ -763,7 +763,7 @@ describe('Matterbridge ' + NAME, () => {
     expect(loggerFatalSpy).not.toHaveBeenCalled();
   });
 
-  it('should call onStart and register a remote individual entity, a media_player device with two remote entities, one normal and one split with Merge strategy', async () => {
+  it('should call onStart and register a remote individual entity, a device ignoring media_player with two remote entities, one normal and one split with Merge strategy', async () => {
     const virtualLabel = generateLabel(haPlatform.ha, 'Virtual Label');
     const device = generateDevice(haPlatform.ha, 'TV Device');
     const remoteIndividualEntity = generateEntity(haPlatform.ha, 'Individual remote', 'remote');
@@ -795,15 +795,15 @@ describe('Matterbridge ' + NAME, () => {
     expect(haPlatform.matterbridgeDevices.has(remoteDeviceEntity.entity_id)).toBe(false);
     expect(haPlatform.matterbridgeDevices.has(mediaplayerDeviceEntity.entity_id)).toBe(false);
     expect(haPlatform.matterbridgeDevices.has(remoteSplitEntity.entity_id)).toBe(true);
-    expect(haPlatform.endpointNames.size).toBe(4);
+    expect(haPlatform.endpointNames.size).toBe(3);
     expect(haPlatform.endpointNames.get(remoteIndividualEntity.entity_id)).toBe('');
-    expect(haPlatform.endpointNames.get(remoteDeviceEntity.entity_id)).toBe('remote.device_remote_entity');
-    expect(haPlatform.endpointNames.get(mediaplayerDeviceEntity.entity_id)).toBe('media_player.device_media_player_entity');
+    expect(haPlatform.endpointNames.get(remoteDeviceEntity.entity_id)).toBe('');
+    expect(haPlatform.endpointNames.get(mediaplayerDeviceEntity.entity_id)).toBeUndefined();
     expect(haPlatform.endpointNames.get(remoteSplitEntity.entity_id)).toBe('');
-    expect(aggregator.parts.size).toBe(12);
+    expect(aggregator.parts.size).toBe(3);
     const endpoint = haPlatform.matterbridgeDevices.get(device.id);
     expect(endpoint).toBeDefined();
-    expect(endpoint?.getChildEndpoints().length).toBe(2);
+    expect(endpoint?.getChildEndpoints().length).toBe(0);
 
     vi.clearAllMocks();
     haPlatform.filterMessages.length = 0;

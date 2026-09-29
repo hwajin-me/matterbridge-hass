@@ -951,7 +951,9 @@ describe('HassPlatform', () => {
     await haPlatform.registerDevice(device);
     await haPlatform.onStart('Test reason');
 
-    expect(loggerWarnSpy).toHaveBeenCalledWith(`Individual entity "${CYAN}${entity.name}${wr}" already exists as a registered device. Please change the name in Home Assistant`);
+    expect(loggerWarnSpy).toHaveBeenCalledWith(
+      `Individual entity ${CYAN}${entity.entity_id}${wr} name "${CYAN}${entity.name}${wr}" already exists as a registered device. Skipping registration. Please change the name in Home Assistant`,
+    );
     await haPlatform.unregisterDevice(device);
   });
 
@@ -1421,7 +1423,9 @@ describe('HassPlatform', () => {
     await haPlatform.onStart('Test reason');
     // await new Promise((resolve) => setTimeout(resolve, 100)); // Allow async event handling to complete
 
-    expect(loggerWarnSpy).toHaveBeenCalledWith(`Device "${CYAN}${device.name}${wr}" already exists as a registered device. Please change the name in Home Assistant`);
+    expect(loggerWarnSpy).toHaveBeenCalledWith(
+      `Device ${CYAN}${device.id}${wr} name "${CYAN}${device.name}${wr}" already exists as a registered device. Skipping registration. Please change the name in Home Assistant`,
+    );
 
     await haPlatform.unregisterDevice(mbdevice);
   });
@@ -2897,7 +2901,7 @@ describe('HassPlatform', () => {
     expect(haPlatform.stateCache.log.logLevel).toBe(LogLevel.DEBUG);
   });
 
-  it.each(['individual', 'device', 'split'])('should expose only command switches without labels for %s media players', async (kind) => {
+  it.each(['individual', 'device', 'split'])('should not export %s media players even with legacy controls enabled', async (kind) => {
     const saved = { ...haPlatform.config };
     Object.assign(haPlatform.config, {
       mediaPlayerControlsOnly: true,
@@ -2915,36 +2919,13 @@ describe('HassPlatform', () => {
     const device = kind === 'individual' ? null : generateDevice(haPlatform.ha, 'Media room');
     const entity = generateEntity(haPlatform.ha, 'TV controls', 'media_player', device, null, [], 'on', { supported_features: MediaPlayerEntityFeature.TURN_ON });
     if (kind === 'split') haPlatform.config.splitEntities = [entity.entity_id];
-    const clearDevice = vi.spyOn(haPlatform, 'clearDeviceSelect');
     try {
-      await haPlatform.onStart('Media compatibility');
-      expect(matterbridge.addVirtualEndpoint).toHaveBeenCalledTimes(1);
-      expect(matterbridge.addVirtualEndpoint).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('Turn ON'), 'mounted_switch', expect.any(Function));
+      await haPlatform.onStart('Removed media support');
+      expect(matterbridge.addVirtualEndpoint).not.toHaveBeenCalled();
       expect(haPlatform.matterbridgeDevices.size).toBe(0);
       expect(haPlatform.endpointNames.size).toBe(0);
-      expect(clearDevice).not.toHaveBeenCalledWith(kind === 'device' ? device?.id : entity.id);
-      const live = haPlatform.ha.hassStates.get(entity.entity_id);
-      if (!live) throw new Error('Missing media state');
-      expect(haPlatform.stateCache.get(entity.entity_id)).toEqual(live);
-      await haPlatform.updateHandler(device?.id ?? null, entity.entity_id, live, { ...live, state: 'unavailable' });
-      expect(haPlatform.stateCache.get(entity.entity_id)?.attributes.supported_features).toBe(MediaPlayerEntityFeature.TURN_ON);
-      await haPlatform.updateHandler(device?.id ?? null, entity.entity_id, { ...live, state: 'unavailable' }, live);
-      expect(haPlatform.stateCache.get(entity.entity_id)).toEqual(live);
-      // HA can return a restored placeholder after a restart even though no
-      // unavailable event was delivered before the previous bridge stopped.
-      for (const availability of ['unavailable', 'unknown']) {
-        haPlatform.ha.hassStates.set(entity.entity_id, {
-          ...live,
-          state: availability,
-          attributes: { restored: true },
-        } as unknown as HassState);
-        matterbridge.addVirtualEndpoint.mockClear();
-        await haPlatform.onStart('Offline media restart');
-        expect(matterbridge.addVirtualEndpoint).toHaveBeenCalledTimes(1);
-        expect(haPlatform.endpointNames.size).toBe(0);
-      }
+      expect(haPlatform.getSelectDevices()).toEqual([]);
     } finally {
-      clearDevice.mockRestore();
       Object.assign(haPlatform.config, saved);
     }
   });

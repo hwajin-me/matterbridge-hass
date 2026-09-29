@@ -101,11 +101,10 @@ describe('HassPlatform converters', () => {
     expect(converter?.({ newMode: 1 }, attributes, state)).toBeUndefined();
   });
 
-  it.each([0, 127, 254])('should map media level %s to volume rather than brightness', (level) => {
-    const converter = hassCommandConverter.find((entry) => entry.domain === 'media_player' && entry.command === 'moveToLevel')?.converter;
-    expect(converter?.({ level }, {})).toEqual({ volume_level: level / 254 });
-    expect(converter?.({ level: 255 }, {})).toBeUndefined();
-    expect(converter?.({ level: -1 }, {})).toBeUndefined();
+  it('should not expose media player types, states, attributes or commands', () => {
+    for (const entries of [hassDomainConverter, hassCommandConverter, hassUpdateStateConverter, hassUpdateAttributeConverter]) {
+      expect(entries.some((entry) => entry.domain === 'media_player')).toBe(false);
+    }
   });
 
   it('should ignore unsupported climate fan and HVAC modes instead of turning off', () => {

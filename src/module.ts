@@ -91,7 +91,6 @@ import {
 } from './homeAssistant.js';
 import { updateNativeHumidity } from './humidistat.js';
 import { matchesSensorStateClass } from './measurements.js';
-import { registerMediaControls } from './mediaControls.js';
 import { MutableDevice } from './mutableDevice.js';
 import { savePayload } from './payload.js';
 import { writeReport } from './report.js';
@@ -129,7 +128,6 @@ export interface HomeAssistantPlatformConfig extends PlatformConfig {
   humidifierDeviceType?: 'compatible' | 'native-cold-mist' | 'native-warm-mist';
   discardHiddenEntities: boolean;
   virtualControlLabel: string;
-  mediaPlayerControlsOnly?: boolean;
 }
 
 /**
@@ -177,7 +175,6 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
 
   /** Named environmental controls registered for each source Home Assistant entity. */
   readonly environmentControls = new Map<string, EnvironmentControl[]>();
-  readonly mediaControlEntities = new Set<string>();
   /** Endpoint names remapping for entities. Key is entity.entity_id. Value is the endpoint name ('' for the main endpoint) */
   readonly endpointNames = new Map<EntityId, string>();
 
@@ -196,22 +193,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
   /** Supported helper domains */
   readonly supportedHelpersDomains = ['automation', 'scene', 'script', 'input_boolean', 'input_button'];
   /** Supported core domains */
-  readonly supportedCoreDomains = [
-    'switch',
-    'siren',
-    'light',
-    'lock',
-    'fan',
-    'cover',
-    'climate',
-    'humidifier',
-    'valve',
-    'vacuum',
-    'remote',
-    'input_select',
-    'select',
-    'media_player',
-  ]; // 'input_select' is an helper but we support it like core
+  readonly supportedCoreDomains = ['switch', 'siren', 'light', 'lock', 'fan', 'cover', 'climate', 'humidifier', 'valve', 'vacuum', 'remote', 'input_select', 'select']; // 'input_select' is an helper but we support it like core
   /** Supported other domains */
   readonly supportedOtherDomains = ['sensor', 'binary_sensor', 'event', 'button'];
   /** All supported domains */
@@ -296,7 +278,6 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       this.config.enableServerRvc = isValidBoolean(this.config.enableServerRvc) ? this.config.enableServerRvc : true;
       this.config.discardHiddenEntities = isValidBoolean(this.config.discardHiddenEntities) ? this.config.discardHiddenEntities : false;
       this.config.virtualControlLabel = isValidString(this.config.virtualControlLabel, 1) ? this.config.virtualControlLabel : '';
-      this.config.mediaPlayerControlsOnly = this.config.mediaPlayerControlsOnly === true;
       this.config.debug ??= false;
       this.config.unregisterOnShutdown ??= false;
     }
@@ -475,7 +456,6 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
     // Clean the selectDevice and selectEntity maps
     await this.ready;
     await this.clearSelect();
-    this.mediaControlEntities.clear();
 
     // Load the cached states from storage to the in-memory cache before processing the entities. This is needed to have the latest available state of entities when they turn to unavailable.
     /* v8 ignore next cause if the platform is ready then the context is defined */
@@ -505,7 +485,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
     for (const entity of Array.from(this.ha.hassEntities.values()).filter(
       (entity) => isIndividualEntity(entity) && !isDisabled(entity) && (!isHidden(entity) || !this.config.discardHiddenEntities),
     )) {
-      if (this.matterbridgeDevices.has(entity.entity_id) || this.mediaControlEntities.has(entity.entity_id)) continue;
+      if (this.matterbridgeDevices.has(entity.entity_id)) continue;
       const [domain, name] = entity.entity_id.split('.');
       // Skip not supported domains.
       if (!this.supportedDomains.includes(domain)) {
@@ -518,11 +498,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
         this.log.debug(`Individual entity ${CYAN}${entity.entity_id}${db}: state not found. Skipping...`);
         continue;
       }
-      if (
-        hassState.state === 'unavailable' &&
-        hassState.attributes?.['restored'] === true &&
-        !(this.config.mediaPlayerControlsOnly && entity.entity_id.startsWith('media_player.'))
-      ) {
+      if (hassState.state === 'unavailable' && hassState.attributes?.['restored'] === true) {
         this.log.debug(`Individual entity ${CYAN}${entity.entity_id}${db}: state unavailable and restored. Skipping...`);
         continue;
       }
@@ -535,7 +511,9 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       // If the entity has an already registered name, we skip it.
       if (this.hasDeviceName(entityName)) {
         this.duplicatedEntities++;
-        this.log.warn(`Individual entity "${CYAN}${entityName}${wr}" already exists as a registered device. Please change the name in Home Assistant`);
+        this.log.warn(
+          `Individual entity ${CYAN}${entity.entity_id}${wr} name "${CYAN}${entityName}${wr}" already exists as a registered device. Skipping registration. Please change the name in Home Assistant`,
+        );
         continue;
       }
       // Apply area and label filters before the select and validation
@@ -570,11 +548,6 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
         this.log.warn(
           `Individual entity "${CYAN}${entityName}${wr}" has a name that exceeds Matter’s 32-character limit (${entityName.length}). Matterbridge will truncate the name, but it's recommended to change it in Home Assistant to avoid issues.`,
         );
-      }
-
-      if (domain === 'media_player' && this.config.mediaPlayerControlsOnly) {
-        if (!this.mediaControlEntities.has(entity.entity_id)) await registerMediaControls(this, entity, hassState);
-        continue;
       }
 
       // Create a Mutable device with bridgedNode
@@ -674,7 +647,9 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       // If the device has an already registered name, we skip it.
       if (this.hasDeviceName(deviceName)) {
         this.duplicatedDevices++;
-        this.log.warn(`Device "${CYAN}${deviceName}${wr}" already exists as a registered device. Please change the name in Home Assistant`);
+        this.log.warn(
+          `Device ${CYAN}${device.id}${wr} name "${CYAN}${deviceName}${wr}" already exists as a registered device. Skipping registration. Please change the name in Home Assistant`,
+        );
         continue;
       }
       // Apply area and label filters before the select and validation
@@ -687,6 +662,12 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       if (!satisfiesLabelFilter(this, device) && !deviceHasValidLabelFilterEntities) {
         this.filteredDevices++;
         this.log.info(`Device ${CYAN}${deviceName}${nf} (${device.id}) and its enabled entities do not have the label "${CYAN}${this.config.filterByLabel}${nf}". Skipping...`);
+        continue;
+      }
+      // Media-only devices must not leave selectable rows without a registered endpoint.
+      const enabledDeviceEntities = Array.from(this.ha.hassEntities.values()).filter((entity) => entity.device_id === device.id && !isDisabled(entity));
+      if (enabledDeviceEntities.length > 0 && enabledDeviceEntities.every((entity) => entity.entity_id.startsWith('media_player.'))) {
+        await this.clearDeviceSelect(device.id);
         continue;
       }
       // Set the device selects and validate the device.
@@ -743,7 +724,6 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       // *******************************************************************************************************************
 
       let hasRvc = false;
-      let hasMediaControls = false;
       for (const entity of Array.from(this.ha.hassEntities.values()).filter(
         (entity) => entity.device_id === device.id && !isDisabled(entity) && (!isHidden(entity) || !this.config.discardHiddenEntities),
       )) {
@@ -762,11 +742,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
           this.log.debug(`Device ${CYAN}${device.name}${db} entity ${CYAN}${entity.entity_id}${db}: state not found. Skipping...`);
           continue;
         }
-        if (
-          hassState.state === 'unavailable' &&
-          hassState.attributes?.['restored'] === true &&
-          !(this.config.mediaPlayerControlsOnly && entity.entity_id.startsWith('media_player.'))
-        ) {
+        if (hassState.state === 'unavailable' && hassState.attributes?.['restored'] === true) {
           this.log.debug(`Device ${CYAN}${device.name}${db} entity ${CYAN}${entity.entity_id}${db}: state unavailable and restored. Skipping...`);
           continue;
         }
@@ -786,11 +762,6 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
         }
         if (!this.validateEntity(deviceName, entity.entity_id, true)) {
           this.unselectedEntities++;
-          continue;
-        }
-        if (domain === 'media_player' && this.config.mediaPlayerControlsOnly) {
-          if (!this.mediaControlEntities.has(entity.entity_id)) await registerMediaControls(this, entity, hassState);
-          hasMediaControls = true;
           continue;
         }
         // Set the entity mode for the Rvc.
@@ -870,7 +841,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
           // Entity routes are staged while constructing the group. Failed
           // groups must not remain visible/controllable through those routes.
           for (const entity of deviceEntities) {
-            if (!this.mediaControlEntities.has(entity.entity_id)) this.endpointNames.delete(entity.entity_id);
+            this.endpointNames.delete(entity.entity_id);
           }
           await this.clearDeviceSelect(device.id);
         }
@@ -892,7 +863,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
             this.log.debug(`- Device ${CYAN}${device.name}${db} entity ${CYAN}${entity.entity_id}${db} mapped to endpoint ${CYAN}${endpoint}${db}`);
           }
         }
-      } else if (!hasMediaControls) {
+      } else {
         this.log.debug(`Device ${CYAN}${device.name}${db} has no supported entities. Deleting device select...`);
         await this.clearDeviceSelect(device.id);
       }
@@ -906,7 +877,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
     for (const entity of Array.from(this.ha.hassEntities.values()).filter(
       (entity) => isDeviceEntity(entity) && !isDisabled(entity) && (!isHidden(entity) || !this.config.discardHiddenEntities) && isSplitEntity(this, entity),
     )) {
-      if (this.matterbridgeDevices.has(entity.entity_id) || this.mediaControlEntities.has(entity.entity_id)) continue;
+      if (this.matterbridgeDevices.has(entity.entity_id)) continue;
       const [domain, name] = entity.entity_id.split('.');
       // Skip not supported domains.
       if (!this.supportedDomains.includes(domain)) {
@@ -920,11 +891,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
         this.log.debug(`Split entity ${CYAN}${entity.entity_id}${db} state not found. Skipping...`);
         continue;
       }
-      if (
-        hassState.state === 'unavailable' &&
-        hassState.attributes?.['restored'] === true &&
-        !(this.config.mediaPlayerControlsOnly && entity.entity_id.startsWith('media_player.'))
-      ) {
+      if (hassState.state === 'unavailable' && hassState.attributes?.['restored'] === true) {
         this.log.debug(`Split entity ${CYAN}${entity.entity_id}${db}: state unavailable and restored. Skipping...`);
         continue;
       }
@@ -995,11 +962,6 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
         this.log.warn(
           `Split entity "${CYAN}${entityName}${wr}" has a name that exceeds Matter’s 32-character limit (${entityName.length}). Matterbridge will truncate the name, but it's recommended to change it in Home Assistant to avoid issues.`,
         );
-      }
-
-      if (domain === 'media_player' && this.config.mediaPlayerControlsOnly) {
-        if (!this.mediaControlEntities.has(entity.entity_id)) await registerMediaControls(this, entity, hassState);
-        continue;
       }
 
       if (registrationName !== entityName) {
@@ -1553,13 +1515,6 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
   }
 
   async updateHandler(deviceId: string | null, entityId: string, old_state: HassState, new_state: HassState): Promise<void> {
-    if (this.config.mediaPlayerControlsOnly && this.mediaControlEntities.has(entityId)) {
-      // These controls have no native media endpoint, but still need cached
-      // capabilities to survive a restart while the source is unavailable.
-      if (new_state.state !== 'unavailable' && new_state.state !== 'unknown') this.stateCache.add(new_state);
-      else if (old_state.state !== 'unavailable' && old_state.state !== 'unknown') this.stateCache.add(old_state);
-      return;
-    }
     /* v8 ignore next cause an entity without a device_id is always registered under its own entityId, so the deviceId fallback is never taken */
     const matterbridgeDevice = this.matterbridgeDevices.has(entityId) ? this.matterbridgeDevices.get(entityId) : this.matterbridgeDevices.get(deviceId ?? entityId);
     if (!matterbridgeDevice) {

@@ -26,7 +26,6 @@
 
 import {
   airQualitySensor,
-  basicVideoPlayer,
   colorTemperatureLight,
   type CommandHandlers,
   contactSensor,
@@ -68,7 +67,6 @@ import {
   FormaldehydeConcentrationMeasurement,
   IlluminanceMeasurement,
   LevelControl,
-  MediaPlayback,
   ModeSelect,
   NitrogenDioxideConcentrationMeasurement,
   OccupancySensing,
@@ -474,15 +472,6 @@ export const hassUpdateStateConverter: { domain: string; state: string; clusterI
     { domain: 'remote', state: 'on', clusterId: OnOff.id, attribute: 'onOff', value: true },
     { domain: 'remote', state: 'off', clusterId: OnOff.id, attribute: 'onOff', value: false },
 
-    { domain: 'media_player', state: 'on', clusterId: OnOff.id, attribute: 'onOff', value: true },
-    { domain: 'media_player', state: 'off', clusterId: OnOff.id, attribute: 'onOff', value: false },
-    { domain: 'media_player', state: 'playing', clusterId: MediaPlayback.id, attribute: 'currentState', value: MediaPlayback.PlaybackState.Playing },
-    { domain: 'media_player', state: 'paused', clusterId: MediaPlayback.id, attribute: 'currentState', value: MediaPlayback.PlaybackState.Paused },
-    { domain: 'media_player', state: 'idle', clusterId: MediaPlayback.id, attribute: 'currentState', value: MediaPlayback.PlaybackState.NotPlaying },
-    { domain: 'media_player', state: 'standby', clusterId: MediaPlayback.id, attribute: 'currentState', value: MediaPlayback.PlaybackState.NotPlaying },
-    { domain: 'media_player', state: 'buffering', clusterId: MediaPlayback.id, attribute: 'currentState', value: MediaPlayback.PlaybackState.Buffering },
-    { domain: 'media_player', state: 'on', clusterId: MediaPlayback.id, attribute: 'currentState', value: MediaPlayback.PlaybackState.Playing },
-    { domain: 'media_player', state: 'off', clusterId: MediaPlayback.id, attribute: 'currentState', value: MediaPlayback.PlaybackState.NotPlaying },
   ];
 
 /**
@@ -547,7 +536,6 @@ export const hassUpdateAttributeConverter: { domain: string; with: string; clust
       const effectIndex = state.attributes['effect_list']?.indexOf(value) ?? -1;
       return effectIndex >= 0 ? effectIndex + 1 : null;
     } },
-    { domain: 'media_player', with: 'volume_level', clusterId: LevelControl.id, attribute: 'currentLevel', converter: (value: number) => isValidNumber(value, 0, 1) ? Math.round(value * 254) : null },
 
     { domain: 'valve', with: 'current_position', clusterId: ValveConfigurationAndControl.id, attribute: 'currentLevel', converter: (value: number) => (isValidNumber(value, 0, 100) ? Math.round(value) : null) },
   ];
@@ -580,7 +568,6 @@ export const hassDomainConverter: { domain: string; withAttribute?: string; devi
     { domain: 'remote',                                 deviceType: onOffPlugInUnit,        clusterId: OnOff.id },
     { domain: 'input_select',                           deviceType: modeSelect,             clusterId: ModeSelect.id },
     { domain: 'select',                                 deviceType: modeSelect,             clusterId: ModeSelect.id },
-    { domain: 'media_player',                           deviceType: basicVideoPlayer,       clusterId: MediaPlayback.id },
     { domain: 'sensor',                                 deviceType: null,                   clusterId: null },
     { domain: 'binary_sensor',                          deviceType: null,                   clusterId: null },
   ];
@@ -706,15 +693,6 @@ export const hassCommandConverter: { command: CommandHandlers; domain: string; s
     { command: 'changeToMode',            domain: 'input_select', service: 'select_option', converter: (request, attributes, state) => { return getSelectOptionFromMode(request, state) } },
     { command: 'changeToMode',            domain: 'select', service: 'select_option', converter: (request, attributes, state) => { return getSelectOptionFromMode(request, state) }  },
 
-    { command: 'on',                      domain: 'media_player', service: 'turn_on' },
-    { command: 'off',                     domain: 'media_player', service: 'turn_off' },
-    { command: 'play',                    domain: 'media_player', service: 'media_play' },
-    { command: 'pause',                   domain: 'media_player', service: 'media_pause' },
-    { command: 'stop',                    domain: 'media_player', service: 'media_stop' },
-    { command: 'previous',                domain: 'media_player', service: 'media_previous_track' },
-    { command: 'next',                    domain: 'media_player', service: 'media_next_track' },
-    { command: 'moveToLevel',             domain: 'media_player', service: 'volume_set', converter: (request) => isValidNumber(request.level, 0, 254) ? { volume_level: request.level / 254 } : undefined },
-    { command: 'moveToLevelWithOnOff',    domain: 'media_player', service: 'volume_set', converter: (request) => isValidNumber(request.level, 0, 254) ? { volume_level: request.level / 254 } : undefined },
   ];
 
 /**

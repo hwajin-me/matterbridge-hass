@@ -9,7 +9,6 @@ const MATTER_PORT = 6300;
 const MATTER_CREATE_ONLY = true;
 
 import {
-  basicVideoPlayer,
   bridgedNode,
   colorDimmerSwitch,
   colorTemperatureLight,
@@ -681,30 +680,6 @@ describe('MutableDevice', () => {
     const mutableDevice = new MutableDevice(mockMatterbridge, 'Test Device on off');
     mutableDevice.addDeviceTypes('', bridgedNode, onOffLight);
     mutableDevice.addOnOff('', true);
-
-    expect(mutableDevice.get()).toBeDefined();
-    expect(mutableDevice.get().clusterServersIds).toHaveLength(0);
-    expect(mutableDevice.get().clusterServersObjs).toHaveLength(1);
-
-    mutableDevice.destroy();
-  });
-
-  it('should addBasicVideoPlayer', () => {
-    const mutableDevice = new MutableDevice(mockMatterbridge, 'Test Device basic video player');
-    mutableDevice.addDeviceTypes('', bridgedNode, basicVideoPlayer);
-    mutableDevice.addBasicVideoPlayer('');
-
-    expect(mutableDevice.get()).toBeDefined();
-    expect(mutableDevice.get().clusterServersIds).toHaveLength(0);
-    expect(mutableDevice.get().clusterServersObjs).toHaveLength(1);
-
-    mutableDevice.destroy();
-  });
-
-  it('should addKeypadInput', () => {
-    const mutableDevice = new MutableDevice(mockMatterbridge, 'Test Device keypad input');
-    mutableDevice.addDeviceTypes('', bridgedNode, basicVideoPlayer);
-    mutableDevice.addKeypadInput('');
 
     expect(mutableDevice.get()).toBeDefined();
     expect(mutableDevice.get().clusterServersIds).toHaveLength(0);

@@ -72,22 +72,21 @@ Pair Matterbridge to your controller.
 
 ## Supported device entities:
 
-| Domain       | Supported states                           | Supported attributes                                                                                                               |
-| ------------ | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| switch       | on, off                                    |                                                                                                                                    |
-| light        | on, off                                    | brightness, color_mode, color_temp, hs_color, xy_color                                                                             |
-| lock         | locked, locking, unlocking, unlocked, open | `open` is exposed as Matter `unlocked` (Matter has no separate lock-open state)                                                    |
-| fan          | on, off                                    | percentage, preset_mode (1), direction, oscillating                                                                                |
-| cover        | open, closed, opening, closing             | current_position, current_tilt_position (requires lift and tilt positioning)                                                       |
-| climate      | off, heat, cool, heat_cool, auto           | current_temperature, temperature, target_temp_low, target_temp_high, min_temp, max_temp, current_humidity, fan_modes, preset_modes |
-| humidifier   | on, off                                    | Humidifier and dehumidifier: current_humidity, humidity, min_humidity, max_humidity, target_humidity_step, available_modes         |
-| valve        | open, closed, opening, closing             | current_position                                                                                                                   |
-| vacuum (2)   | idle, cleaning, paused, docked, returning  |                                                                                                                                    |
-| button       |                                            |                                                                                                                                    |
-| remote       | on, off                                    |                                                                                                                                    |
-| siren        | on, off                                    | Basic switching as an on/off outlet; tones and duration are not exposed                                                            |
-| select       |                                            | options                                                                                                                            |
-| media_player | on, off, play, pause, stop, previous, next |                                                                                                                                    |
+| Domain     | Supported states                           | Supported attributes                                                                                                               |
+| ---------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| switch     | on, off                                    |                                                                                                                                    |
+| light      | on, off                                    | brightness, color_mode, color_temp, hs_color, xy_color                                                                             |
+| lock       | locked, locking, unlocking, unlocked, open | `open` is exposed as Matter `unlocked` (Matter has no separate lock-open state)                                                    |
+| fan        | on, off                                    | percentage, preset_mode (1), direction, oscillating                                                                                |
+| cover      | open, closed, opening, closing             | current_position, current_tilt_position (requires lift and tilt positioning)                                                       |
+| climate    | off, heat, cool, heat_cool, auto           | current_temperature, temperature, target_temp_low, target_temp_high, min_temp, max_temp, current_humidity, fan_modes, preset_modes |
+| humidifier | on, off                                    | Humidifier and dehumidifier: current_humidity, humidity, min_humidity, max_humidity, target_humidity_step, available_modes         |
+| valve      | open, closed, opening, closing             | current_position                                                                                                                   |
+| vacuum (2) | idle, cleaning, paused, docked, returning  |                                                                                                                                    |
+| button     |                                            |                                                                                                                                    |
+| remote     | on, off                                    |                                                                                                                                    |
+| siren      | on, off                                    | Basic switching as an on/off outlet; tones and duration are not exposed                                                            |
+| select     |                                            | options                                                                                                                            |
 
 (1) - Supported preset_modes: auto, low, medium, high.
 
@@ -204,7 +203,6 @@ The additional mappings are covered by automated tests, including Matter endpoin
 
 - Vacuum ServiceArea selection stores areas; changing RVC run mode to Cleaning starts `vacuum.clean_area` for the selection. An empty selection uses `vacuum.start`. Home Assistant must advertise CLEAN_AREA and support the selected area IDs. Map images are available in the plugin web dashboard described below; map pixels and per-area progress are not transported over Matter. Invalid or ambiguous area registries disable ServiceArea with a warning instead of preventing the vacuum from initializing.
 - Climate fan control maps the standard `low`, `medium`, `high`, and `auto` names. Integration-specific aliases and percentage control are not implemented. Unsupported fan mode writes do not turn off the thermostat.
-- Media volume is an additional LevelControl cluster on the existing media endpoint, not a separate Matter Speaker device. Controller discovery and mute semantics still need a dedicated implementation.
 - Covers exposing both SET_POSITION and SET_TILT_POSITION receive lift/tilt positioning. Tilt-only devices are not yet supported.
 - Light effects use ModeSelect with stable advertised labels even if Home Assistant reorders its effect list. Removed effects are ignored; new effects require rebuilding the endpoint.
 
@@ -237,6 +235,8 @@ Protocol reference: [connectedhomeip data model](https://github.com/project-chip
 If any commonly used integration use other useful events, let me know please.
 
 ### Naming issues explained
+
+When the plugin warns that entities or devices were discarded due to duplicate names, check the warning logs for each skipped item. They include the duplicate name and the Home Assistant entity ID (for individual or split entities) or device ID so you can identify and rename the item in Home Assistant.
 
 For the naming issues (expecially upsetting with Alexa) read the explanation and the three possible actual solutions [here](https://github.com/Luligu/matterbridge-hass/discussions/86).
 
@@ -416,80 +416,19 @@ In server mode, the plugin always promotes the vacuum to the main endpoint, for 
 
 If enabled (default), the plugin discards entities that are hidden in Home Assistant (i.e. entities whose `hidden_by` field is not `null` in the entity registry). Hidden entities will not be exposed as device entities, individual entities, or split entities.
 
-### Apple Home Media Command Switches
+### Media players
 
-Enable this option (`mediaPlayerControlsOnly`) and restart Matterbridge to expose
-eligible `media_player` entities as command switches without their direct Matter
-media-player endpoint. This avoids exposing the unsupported media device type to
-Apple Home. No Virtual Control Label or per-player HA label assignment is needed.
-Area, label, domain, device and entity filters still apply; do not blacklist the
-media-player domain to enable this mode. Individual, device and split entities
-follow the same behavior.
+`media_player` export is not supported. Apple Home does not support the Matter Basic Video Player type used by this plugin, so native media endpoints and media command switches have been removed. See [Apple's supported Matter accessory types](https://support.apple.com/en-gb/102135).
 
-Only advertised commands are created: power, play/pause/stop, previous/next,
-mute/unmute and volume steps. Mute and unmute send explicit `is_volume_muted`
-arguments. Commands check current availability and features before execution.
-Offline discovery, including restored/unknown states, uses the last known
-capabilities when available; if none are known, bring the player online and
-restart the plugin. Long or duplicate player names receive a stable suffix
-within Matter's name limit. A failed control registration is logged without
-preventing the remaining controls from registering.
-
-The option defaults to off, preserving native media endpoints and existing
-label-based controls. It applies to every controller using this bridge and does
-not add a Now Playing tile, media browsing or AirPlay. Existing controllers may
-retain a cached old accessory after the endpoint layout changes; restarting
-cannot make the old media type supported.
+Legacy `mediaPlayerControlsOnly`, virtual-control labels and split settings cannot re-enable media export. Restart the updated plugin to rebuild its endpoints. Old accessories may remain cached in the controller; this change does not reset pairing or delete controller configuration. Other supported entities on the same HA device continue to be exported. Media-only devices are removed from the selectable list instead of leaving an unregistered row with blank availability.
 
 ### Virtual Control Label
 
-Label used to enable virtual controls on entities. If set, the plugin creates one virtual control for each entity with the selected label. These virtual controls are intended for accessibility and let you send commands to entities that are not directly supported by the controller, such as `media_player.samsung_tv`, with simple voice-friendly switches. Virtual controls are exposed as switch entities: turning one on triggers the command, and the plugin automatically turns it off again afterward.
+Label used to create momentary option controls for `select` and `input_select` entities. Turning a control on selects its option and automatically resets the control.
 
-Supported virtual control domains:
+Media players are not exported and ignore this label.
 
-| Domain       | Feature        | Service              | Virtual control       |
-| ------------ | -------------- | -------------------- | --------------------- |
-| media_player | TURN_ON        | TURN_ON              | Turn ON + name        |
-|              | TURN_OFF       | TURN_OFF             | Turn OFF + name       |
-|              | PLAY           | MEDIA_PLAY           | Play + name           |
-|              | PAUSE          | MEDIA_PAUSE          | Pause + name          |
-|              | STOP           | MEDIA_STOP           | Stop + name           |
-|              | VOLUME_MUTE    | VOLUME_MUTE          | Mute + name           |
-|              | VOLUME_STEP    | VOLUME_DOWN          | Volume Down + name    |
-|              | VOLUME_STEP    | VOLUME_UP            | Volume Up + name      |
-|              | PREVIOUS_TRACK | MEDIA_PREVIOUS_TRACK | Previous Track + name |
-|              | NEXT_TRACK     | MEDIA_NEXT_TRACK     | Next Track + name     |
-| select       |                |                      | name + all options    |
-| input_select |                |                      | name + all options    |
-
-Use this option to create simple voice-friendly switches like `Play TV`, `Pause TV`, or `Turn ON TV` for media_player domain: with Siri you can simply say `Hey Siri Play TV`.
-
-Example:
-
-Let's say you have a device named `Samsung TV` with a media_player entity `media_player.samsung_tv`.
-
-If you set `Virtual Control Label` to `matterbridge-virtual` and assign that label to the media_player entity in Home Assistant, the plugin checks which media player features are supported and creates one virtual switch for each supported command.
-
-For example:
-
-- if the device supports `TURN_ON`, the plugin creates `Turn ON Samsung TV`
-- if the device supports `TURN_OFF`, the plugin creates `Turn OFF Samsung TV`
-- if the device supports `PLAY`, the plugin creates `Play Samsung TV`
-- if the device supports `PAUSE`, the plugin creates `Pause Samsung TV`
-- if the device supports `STOP`, the plugin creates `Stop Samsung TV`
-- if the device supports `VOLUME_MUTE`, the plugin creates `Mute Samsung TV`
-- if the device supports `VOLUME_STEP`, the plugin creates `Volume Down Samsung TV` and `Volume Up Samsung TV`
-- if the device supports `PREVIOUS_TRACK`, the plugin creates `Previous Track Samsung TV`
-- if the device supports `NEXT_TRACK`, the plugin creates `Next Track Samsung TV`
-
-When you turn on one of these virtual switches, the plugin sends the corresponding `media_player` service command to that entity and then automatically turns the switch off again.
-
-So, if your `Samsung TV` only supports `TURN_ON`, `TURN_OFF` and `VOLUME_STEP`, you will get these four virtual controls:
-
-- `Turn ON Samsung TV`
-- `Turn OFF Samsung TV`
-- `Volume Down Samsung TV`
-- `Volume Up Samsung TV`
+These controls are separate from **Split By Label**: splitting applies only to entities explicitly listed in `splitEntities` or carrying the configured split label. Keep `splitEntities` empty and `splitByLabel` empty to keep device entities grouped. Reusing an exposure label as the split label intentionally splits every matching entity.
 
 ### Enable Debug
 

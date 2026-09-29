@@ -744,6 +744,8 @@ describe('HassPlatform helpers', () => {
       labels: ['split', 'desk'],
     } as unknown as HassEntity;
 
+    expect(isSplitEntity(createPlatform([], labels, ''), entity)).toBe(false);
+    expect(isSplitEntity(createPlatform([], labels, 'Unrelated'), entity)).toBe(false);
     expect(isSplitEntity(createPlatform(['light.office'], labels, 'separate'), entity)).toBe(true);
     expect(isSplitEntity(createPlatform(['light.kitchen'], labels, 'split'), entity)).toBe(false);
     expect(isSplitEntity(createPlatform(['light.kitchen'], labels, 'Split'), entity)).toBe(true);

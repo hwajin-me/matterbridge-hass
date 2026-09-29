@@ -128,7 +128,6 @@
           "remote",
           "select",
           "input_select",
-          "media_player",
           "siren"
         ]
       },
@@ -162,7 +161,6 @@
           "remote",
           "select",
           "input_select",
-          "media_player",
           "siren"
         ]
       },
@@ -268,15 +266,9 @@
     },
     "virtualControlLabel": {
       "title": "Virtual Control Label",
-      "description": "Label to activates virtual control commands on entities (use label name). If enabled, a virtual control will be created for each entity with the selected label. Virtual controls are used to send commands to entities that are not directly supported by the controller (e.g., media_player.apple_tv). Virtual controls will be exposed as switch entities and will trigger a command when turned on. The plugin will turn off the virtual control after the command is triggered.",
+      "description": "Label name for momentary option switches on select and input_select entities. Media player entities are not exported.",
       "type": "string",
       "default": ""
-    },
-    "mediaPlayerControlsOnly": {
-      "title": "Apple Home Media Command Switches",
-      "description": "Expose eligible media players only as supported command switches, without the unsupported direct media-player endpoint. No Virtual Control Label is needed. Existing area, label, domain and device filters still apply. Includes power, playback, mute/unmute and volume steps when supported. Restart Matterbridge after changing. Does not add Now Playing or AirPlay; other controllers using this bridge also receive switches.",
-      "type": "boolean",
-      "default": false
     },
     "debug": {
       "title": "Enable Debug",

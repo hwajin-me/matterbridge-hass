@@ -3,7 +3,7 @@
  * @description This file contains the addControlEntity function.
  * @author Luca Liguori
  * @created 2025-08-25
- * @version 1.1.0
+ * @version 1.1.1
  * @license Apache-2.0
  *
  * Copyright 2025, 2026, 2027 Luca Liguori.
@@ -59,13 +59,11 @@ import {
   HomeAssistant,
   HVACMode,
   LightEntityFeature,
-  MediaPlayerEntityFeature,
   UnitOfTemperature,
   VacuumEntityFeature,
   ValveEntityFeature,
 } from './homeAssistant.js';
 import { addNativeHumidifier, getNativeHumidityConfig, humidityConditioner } from './humidistat.js';
-import { registerMediaControls } from './mediaControls.js';
 import type { HomeAssistantPlatform } from './module.js';
 import type { MutableDevice } from './mutableDevice.js';
 
@@ -111,7 +109,6 @@ export function addControlEntity(
   let hasEffects = false;
   let hasServiceArea = false;
   let hasTilt = false;
-  let hasVolume = false;
 
   // Use stateCache for state and attributes values to avoid issues with unavailable entities and to have the last valid state and attributes for the entity.
   if (state.state === 'unavailable') {
@@ -339,27 +336,6 @@ export function addControlEntity(
     mutableDevice.addOnOff(endpointName, true);
   }
 
-  // Configure the media_player.
-  if (domain === 'media_player') {
-    platform.log.debug(`= media_player device ${CYAN}${entity.entity_id}${db} state: ${CYAN}${state.state}${db} attrbutes: ${CYAN}${debugStringify(state.attributes)}${db}`);
-    platform.log.debug(
-      `# media_player device ${CYAN}${entity.entity_id}${db} supported_features: ${CYAN}${getFeatureNames(MediaPlayerEntityFeature, state.attributes.supported_features)}${db}`,
-    );
-    mutableDevice.addOnOff(endpointName, true);
-    mutableDevice.addBasicVideoPlayer(endpointName);
-    mutableDevice.addKeypadInput(endpointName);
-    // LevelControl is the Matter volume-control cluster for media endpoints.
-    if (getFeatureNames(MediaPlayerEntityFeature, state.attributes.supported_features).includes('VOLUME_SET')) {
-      mutableDevice.addClusterServerIds(endpointName, LevelControl.id);
-      hasVolume = true;
-    }
-    if (entityHasLabel(platform, entity, platform.config.virtualControlLabel)) {
-      void registerMediaControls(platform, entity, state).catch((error: unknown) => {
-        platform.log.error(`Failed to register media controls for ${entity.entity_id}: ${String(error)}`);
-      });
-    }
-  }
-
   if (domain === 'climate' || domain === 'humidifier') {
     platform.environmentControls.set(entity.entity_id, addEnvironmentControls(platform, mutableDevice, entity, state, !nativeHumidity));
   }
@@ -369,7 +345,6 @@ export function addControlEntity(
     if (domain === 'light' && hassCommand.command === 'changeToMode' && !hasEffects) continue;
     if (domain === 'vacuum' && hassCommand.command === 'selectAreas' && !hasServiceArea) continue;
     if (domain === 'cover' && hassCommand.command === 'goToTiltPercentage' && !hasTilt) continue;
-    if (domain === 'media_player' && hassCommand.service === 'volume_set' && !hasVolume) continue;
     platform.log.debug(`- command: ${CYAN}${hassCommand.command}${db}`);
     mutableDevice.addCommandHandler(entity.entity_id, hassCommand.command, async (data, endpointName, command) => {
       // oxlint-disable-next-line typescript/no-unsafe-type-assertion
