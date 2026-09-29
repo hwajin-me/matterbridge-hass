@@ -5,7 +5,7 @@ import path from 'node:path';
 import { type CommandHandlerData, type MatterbridgeEndpoint, roboticVacuumCleaner } from 'matterbridge';
 import { AnsiLogger, LogLevel } from 'matterbridge/logger';
 
-import { generateDevice, generateEntity, generateState } from '../src/helpers.js';
+import { generateDevice, generateEntity, generateLabel, generateState } from '../src/helpers.js';
 import { HomeAssistant } from '../src/homeAssistant.js';
 import { HomeAssistantPlatform } from '../src/module.js';
 
@@ -19,6 +19,7 @@ vi.mock('../src/report.js', () => ({ writeReport: vi.fn(async () => '') }));
  * @param {boolean} split Whether the vacuum is selected as a split entity.
  * @param {boolean} companions Whether to include map, battery and mode entities.
  * @param {boolean} individual Whether the vacuum has no HA device.
+ * @param {object | undefined} labelScenario Label-based split exposure and naming scenario.
  * @returns {Promise<object>} Constructed endpoints, routing and captured errors.
  */
 async function scan(
@@ -26,6 +27,7 @@ async function scan(
   split: boolean,
   companions: boolean,
   individual = false,
+  labelScenario?: { sameName: boolean; exposeCompanions: boolean; postfix?: string },
 ): Promise<{ registered: MatterbridgeEndpoint[]; platform: HomeAssistantPlatform; errors: unknown[][]; vacuumId: string }> {
   const directory = await mkdtemp(path.join(tmpdir(), 'vacuum-registration-'));
   const log = new AnsiLogger({ logName: 'VacuumRegistration', logLevel: LogLevel.ERROR });
@@ -100,6 +102,22 @@ async function scan(
       registered.push(endpoint);
     },
   } as unknown as HomeAssistantPlatform;
+  if (labelScenario) {
+    const expose = generateLabel(ha, 'Expose: Matter');
+    const splitLabel = generateLabel(ha, 'Expose: MatterSplit');
+    entity.labels = [expose.label_id, splitLabel.label_id];
+    if (labelScenario.sameName) entity.original_name = device.name;
+    if (labelScenario.exposeCompanions) {
+      for (const companion of ha.hassEntities.values()) {
+        if (companion.entity_id !== entity.entity_id) companion.labels = [expose.label_id];
+      }
+    }
+    platform.config.namePostfix = labelScenario.postfix ?? '';
+    platform.config.filterByArea = '';
+    platform.config.filterByLabel = expose.name;
+    platform.config.splitByLabel = splitLabel.name;
+    platform.config.splitEntities = [];
+  }
   try {
     await HomeAssistantPlatform.prototype.onStart.call(platform);
     return { registered, platform, errors, vacuumId: entity.entity_id };
@@ -110,6 +128,17 @@ async function scan(
 
 describe('vacuum startup registration', () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    { exposeCompanions: false, postfix: '' },
+    { exposeCompanions: true, postfix: '' },
+    { exposeCompanions: true, postfix: 'HA' },
+  ])('should expose a same-name label-split vacuum: %j', async ({ exposeCompanions, postfix }) => {
+    const { platform, errors, vacuumId } = await scan('Merge', true, true, false, { sameName: true, exposeCompanions, postfix });
+    expect(errors).toEqual([]);
+    expect(platform.matterbridgeDevices.has(vacuumId)).toBe(true);
+    expect(platform.matterbridgeDevices.get(vacuumId)?.deviceName).toBe(`Robot Vacuum${exposeCompanions ? ` (${vacuumId})` : ''}${postfix ? ` ${postfix}` : ''}`);
+  });
 
   it.each(['Merge', 'Matter'])('should register an individual server vacuum using %s', async (strategy) => {
     const { registered, platform, errors, vacuumId } = await scan(strategy, false, false, true);

@@ -371,6 +371,8 @@ If you want a more technical explanation for the naming issues (expecially upset
 
 Any device entity with this label will be split. This is faster to setup then splitEntities on huge setups.
 
+When a split vacuum has the same name as its already registered parent device, the plugin appends its entity ID to the Matter accessory name (for example, `Robot Vacuum (vacuum.robot_vacuum)`) instead of skipping it as a duplicate. HA names and label/selection matching remain unchanged. Vacuums without this collision keep their existing identity.
+
 > **Adding splitByLabel to an entity doesn't automatically add it to the whiteList, so it must be added manually if you use the whiteList.**
 
 > **If you enable the filters (area and label), the split entity must also satisfy the filter criteria.**

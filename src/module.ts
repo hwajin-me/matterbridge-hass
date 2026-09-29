@@ -3,7 +3,7 @@
  * @description This file contains the class HomeAssistantPlatform.
  * @author Luca Liguori
  * @created 2024-09-13
- * @version 1.8.2
+ * @version 1.8.3
  * @license Apache-2.0
  *
  * Copyright 2024, 2025, 2026 Luca Liguori.
@@ -907,8 +907,22 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
         this.log.debug(`Split entity ${CYAN}${entity.entity_id}${db} has no valid name. Skipping...`);
         continue;
       }
-      // If the entity has an already registered name, we skip it.
-      if (this.hasDeviceName(entityName)) {
+      // A split vacuum can have the same HA name as its parent device. The
+      // parent's selected companions are registered first; do not discard the
+      // vacuum just because they occupy its display name. Keep filter matching
+      // against entityName and only disambiguate the Matter accessory name.
+      const namePostfix = isValidString(this.config.namePostfix, 1, 3) ? ' ' + this.config.namePostfix : '';
+      let registrationName = entityName;
+      if (
+        domain === 'vacuum' &&
+        entity.device_id !== null &&
+        this.hasDeviceName(entityName + namePostfix) &&
+        this.matterbridgeDevices.get(entity.device_id)?.deviceName === entityName + namePostfix
+      ) {
+        registrationName = `${entityName} (${entity.entity_id})`;
+      }
+      // Unrelated devices must still have distinct names.
+      if (this.hasDeviceName(registrationName + namePostfix)) {
         this.duplicatedEntities++;
         this.log.warn(
           `Split entity ${CYAN}${entity.entity_id}${wr} name "${CYAN}${entityName}${wr}" already exists as a registered device. Please change the name in Home Assistant.`,
@@ -960,11 +974,15 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
         continue;
       }
 
+      if (registrationName !== entityName) {
+        this.log.notice(`Split vacuum ${entity.entity_id} shares its parent device name "${entityName}"; registering as "${registrationName}".`);
+      }
+
       // Create a Mutable device with bridgedNode
       this.log.info(`Creating device for split entity ${idn}${entityName}${rs}${nf} domain ${CYAN}${domain}${nf} name ${CYAN}${name}${nf}`);
       const mutableDevice = new MutableDevice(
         this.matterbridge,
-        entityName + (isValidString(this.config.namePostfix, 1, 3) ? ' ' + this.config.namePostfix : ''),
+        registrationName + namePostfix,
         isValidString(this.config.postfix, 1, 3) ? entity.id.slice(0, 32 - this.config.postfix.length) + this.config.postfix : entity.id.slice(0, 32),
         0xfff1,
         'HomeAssistant',
