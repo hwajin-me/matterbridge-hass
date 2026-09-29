@@ -3,7 +3,7 @@
  * @description This file contains the class HomeAssistant.
  * @author Luca Liguori
  * @created 2024-09-14
- * @version 1.2.0
+ * @version 1.2.1
  * @license Apache-2.0
  *
  * Copyright 2024, 2025, 2026 Luca Liguori.
@@ -1148,6 +1148,8 @@ interface HomeAssistantEventEmitter {
   areas: [areas: HassArea[]];
   labels: [labels: HassLabel[]];
   subscribed: [];
+  registry_refreshed: [];
+  state_created: [];
   event: [deviceId: string | null, entityId: string, old_state: HassState, new_state: HassState];
   call_service: [];
   ping: [data: Buffer];
@@ -1320,15 +1322,21 @@ export class HomeAssistant extends EventEmitter {
       /* v8 ignore next */
       if (this.verbose) this.log.debug(`Event ${CYAN}${response.event.event_type}${db} received id ${CYAN}${response.id}${db}:${rs}\n${debugStringify(response.event)}`);
       if (response.event.event_type === 'state_changed') {
+        const newState = response.event.data.new_state;
+        if (newState) {
+          const isNew = !this.hassStates.has(newState.entity_id);
+          this.hassStates.set(newState.entity_id, newState);
+          if (isNew) this.emit('state_created');
+        }
         const entity = this.hassEntities.get(response.event.data.entity_id);
         if (!entity) {
           this.log.debug(`Entity id ${CYAN}${response.event.data.entity_id}${db} not found processing event`);
           return;
         }
         /* v8 ignore next */
-        if (response.event.data.old_state && response.event.data.new_state) {
+        if (response.event.data.new_state) {
           this.hassStates.set(response.event.data.new_state.entity_id, response.event.data.new_state);
-          this.emit('event', entity.device_id, entity.entity_id, response.event.data.old_state, response.event.data.new_state);
+          this.emit('event', entity.device_id, entity.entity_id, response.event.data.old_state ?? response.event.data.new_state, response.event.data.new_state);
         }
       } else if (response.event.event_type === 'call_service') {
         this.log.debug(`Event ${CYAN}${response.event.event_type}${db} received id ${CYAN}${response.id}${db}`);
@@ -1425,6 +1433,14 @@ export class HomeAssistant extends EventEmitter {
         this.log.error(`Error fetching ${CYAN}${fetchId}${er}: ${getErrorMessage(error)}`);
       }
       this.fetchQueue.delete(fetchId);
+    }
+    try {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+      const states = (await this.fetch('get_states')) as HassState[];
+      states.forEach((state) => this.hassStates.set(state.entity_id, state));
+      this.emit('registry_refreshed');
+    } catch (error) {
+      this.log.error(`Error refreshing discovery states: ${getErrorMessage(error)}`);
     }
   }
 

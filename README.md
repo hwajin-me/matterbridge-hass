@@ -312,6 +312,8 @@ Number of times to try to reconnect before giving up.
 
 Filter devices and individual entities by area. If enabled, only devices, individual entities, and split entities in the selected area will be exposed. If disabled, all devices, individual entities, and split entities will be exposed. A device is also exposed if it has any entities that satisfy the filters.
 
+Split entities use their own HA area when explicitly assigned; otherwise they inherit the parent device area. An entity area override takes precedence over the device area.
+
 ### Filter By Label
 
 Filter devices and individual entities by label. If enabled, only devices, individual entities, and split entities with the selected label will be exposed. If disabled, all devices, individual entities, and split entities will be exposed. A device is also exposed if it has any entities that satisfy the filters. A label on a device allows its eligible entities; a label on an entity allows that entity even when its device has no label. In the latter case, unlabeled siblings remain excluded. Adding an entity label does not revoke exposure granted by a device label. Split entities accept the label from either the entity or its device.
@@ -377,7 +379,11 @@ When a split vacuum has the same name as its already registered parent device, t
 
 > **If you enable the filters (area and label), the split entity must also satisfy the filter criteria.**
 
+Grouped devices also ignore blank user-provided names and fall back to the original device name. When group registration fails, its tentative entity routes are removed so the vacuum dashboard cannot list or control an unregistered group.
+
 ### Split Name Strategy
+
+Empty or whitespace-only names are skipped when trying the next name source, so an empty registry name does not prevent registration when HA provides a valid `friendly_name`. A vacuum with no usable name falls back to its entity ID.
 
 Strategy used for split entity names. "Entity name": use the entity name (i.e. Child Lock) if it exists; otherwise, use the friendly name. "Friendly name": use the friendly name (i.e. Computer Plug Child Lock) if it exists; otherwise, use the entity name. Changing this value will cause you to lose the device configuration in your controller, and you may need to pair the controller again.
 
@@ -614,3 +620,9 @@ On the dashboard, click the map to select a destination, then press **선택 위
 A bridged vacuum's reachability follows its registered `vacuum.*` state, not optional battery/diagnostic companions. An unavailable companion no longer marks a healthy vacuum unreachable, and a healthy companion does not hide an unavailable vacuum. Unknown/missing vacuum states preserve the last reachability value until a definite state arrives. Standalone RVC server endpoints do not have `BridgedDeviceBasicInformation.reachable`; the plugin skips that attribute instead of writing a nonexistent cluster.
 
 These changes address availability handling, not every cause of Apple Home “No Response”. If HA is healthy but Apple Home is not, check Matterbridge's RVC registration/error logs and the standalone RVC server's connectivity after restarting the updated plugin. Keep `enableServerRvc` enabled for the existing Apple Home setup. Do not delete pairing data to diagnose the issue. Existing warnings about additional non-vacuum endpoints on a server-mode RVC still require inspection; map/dashboard discovery itself does not add Matter camera endpoints.
+
+### Adding devices while running
+
+New Home Assistant devices, individual entities, and split entities are discovered and registered with Matter automatically, using the current plugin filters and selections. Registry updates are batched for about five seconds, followed by a one-second discovery delay; your Matter controller may need additional time to display the accessory. Devices whose initial HA state arrives later are retried automatically. Existing registered endpoints keep their identity and pairing. Reconnection also checks for additions.
+
+Install the updated plugin and restart it once to enable this behavior. Changes to plugin settings, removal of devices, and changes to the entity layout of an already registered device still require a plugin restart. Newly added devices must satisfy any configured whitelist, area, and label filters.

@@ -3,7 +3,7 @@
  * @description This file contains the class HomeAssistantPlatform.
  * @author Luca Liguori
  * @created 2024-09-13
- * @version 1.8.4
+ * @version 1.8.6
  * @license Apache-2.0
  *
  * Copyright 2024, 2025, 2026 Luca Liguori.
@@ -66,6 +66,7 @@ import { addHelperEntity } from './helper.entity.js';
 import {
   getDomain,
   getEntityName,
+  getFirstValidName,
   hassAreaIdToMatterAreaId,
   isDeviceEntity,
   isDisabled,
@@ -179,6 +180,10 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
   readonly mediaControlEntities = new Set<string>();
   /** Endpoint names remapping for entities. Key is entity.entity_id. Value is the endpoint name ('' for the main endpoint) */
   readonly endpointNames = new Map<EntityId, string>();
+
+  private discoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  private discoveryTask: Promise<void> | undefined;
+  private discoveryStopped = false;
 
   /** Battery voltage entities */
   readonly batteryVoltageEntities = new Set<EntityId>();
@@ -331,7 +336,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
               this.log.error(`Error subscribing to Home Assistant events: ${getErrorMessage(error)}`);
             });
           if (this.isConfigured) this.wssSendSnackbarMessage('Reconnected to Home Assistant', 5, 'success');
-          if (this.isConfigured) this.wssSendRestartRequired();
+          if (this.isConfigured) this.scheduleDiscovery();
           // Subscribed
         })
         .catch((error: unknown) => {
@@ -414,6 +419,9 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       this.log.info('States received from Home Assistant');
     });
 
+    this.ha.on('registry_refreshed', () => this.scheduleDiscovery());
+    this.ha.on('state_created', () => this.scheduleDiscovery());
+
     this.ha.on('event', (deviceId, entityId, old_state, new_state) => {
       fireAndForget(this.updateHandler(deviceId, entityId, old_state, new_state), this.log, 'updateHandler');
     });
@@ -481,6 +489,15 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
         this.log.warn(`Split entity "${CYAN}${entityId}${wr}" set in splitEntities is an individual entity. Please check your configuration.`);
     }
 
+    await this.discoverDevices();
+    this.log.info(`Started platform ${idn}${this.config.name}${rs}${nf}: ${reason ?? ''}`);
+  }
+
+  /**
+   * Registers newly discovered devices using the configured filters and stable HA identifiers.
+   * @returns {Promise<void>} Resolves after the scan completes.
+   */
+  async discoverDevices(): Promise<void> {
     // *********************************************************************************************************
     // ************************************* Scan the individual entities **************************************
     // *********************************************************************************************************
@@ -488,6 +505,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
     for (const entity of Array.from(this.ha.hassEntities.values()).filter(
       (entity) => isIndividualEntity(entity) && !isDisabled(entity) && (!isHidden(entity) || !this.config.discardHiddenEntities),
     )) {
+      if (this.matterbridgeDevices.has(entity.entity_id) || this.mediaControlEntities.has(entity.entity_id)) continue;
       const [domain, name] = entity.entity_id.split('.');
       // Skip not supported domains.
       if (!this.supportedDomains.includes(domain)) {
@@ -555,7 +573,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       }
 
       if (domain === 'media_player' && this.config.mediaPlayerControlsOnly) {
-        await registerMediaControls(this, entity, hassState);
+        if (!this.mediaControlEntities.has(entity.entity_id)) await registerMediaControls(this, entity, hassState);
         continue;
       }
 
@@ -636,8 +654,9 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
     // *********************************************************************************************************
 
     for (const device of Array.from(this.ha.hassDevices.values()).filter((device) => !isDisabled(device))) {
+      if (this.matterbridgeDevices.has(device.id)) continue;
       // Check if we have a valid device
-      const deviceName = device.name_by_user ?? device.name;
+      const deviceName = getFirstValidName(device.name_by_user, device.name);
       if (!isValidString(deviceName, 1)) {
         this.log.debug(`Device ${CYAN}${deviceName}${db} has not valid name. Skipping...`);
         continue;
@@ -730,7 +749,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       )) {
         this.log.debug(`Lookup device ${CYAN}${device.name}${db} entity ${CYAN}${entity.entity_id}${db} labels ${CYAN}${entity.labels?.join(', ') ?? ''}${db}...`);
         const [domain, _name] = entity.entity_id.split('.');
-        const entityName = entity.name ?? entity.original_name ?? deviceName;
+        const entityName = getFirstValidName(entity.name, entity.original_name, deviceName) ?? deviceName;
         let endpointName = entity.entity_id;
         // Skip not supported domains.
         if (!this.supportedDomains.includes(domain)) {
@@ -770,7 +789,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
           continue;
         }
         if (domain === 'media_player' && this.config.mediaPlayerControlsOnly) {
-          await registerMediaControls(this, entity, hassState);
+          if (!this.mediaControlEntities.has(entity.entity_id)) await registerMediaControls(this, entity, hassState);
           hasMediaControls = true;
           continue;
         }
@@ -848,6 +867,11 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
         } catch (error) {
           this.failedDevices++;
           inspectError(this.log, `Failed to register device ${dn}${device.name}${er}`, error);
+          // Entity routes are staged while constructing the group. Failed
+          // groups must not remain visible/controllable through those routes.
+          for (const entity of deviceEntities) {
+            if (!this.mediaControlEntities.has(entity.entity_id)) this.endpointNames.delete(entity.entity_id);
+          }
           await this.clearDeviceSelect(device.id);
         }
         // Log all the remapped endpoints
@@ -882,6 +906,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
     for (const entity of Array.from(this.ha.hassEntities.values()).filter(
       (entity) => isDeviceEntity(entity) && !isDisabled(entity) && (!isHidden(entity) || !this.config.discardHiddenEntities) && isSplitEntity(this, entity),
     )) {
+      if (this.matterbridgeDevices.has(entity.entity_id) || this.mediaControlEntities.has(entity.entity_id)) continue;
       const [domain, name] = entity.entity_id.split('.');
       // Skip not supported domains.
       if (!this.supportedDomains.includes(domain)) {
@@ -938,7 +963,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
         this.log.info(`Split entity ${CYAN}${entity.entity_id}${nf} name ${CYAN}${getEntityName(this, entity)}${nf} device not found. Skipping...`);
         continue;
       }
-      if (!satisfiesAreaFilter(this, device)) {
+      if (!satisfiesAreaFilter(this, typeof entity.area_id === 'string' ? entity : device)) {
         this.log.info(
           `Split entity ${CYAN}${entity.entity_id}${nf} name ${CYAN}${getEntityName(this, entity)}${nf} is not in the area "${CYAN}${this.config.filterByArea}${nf}". Skipping...`,
         );
@@ -973,7 +998,7 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       }
 
       if (domain === 'media_player' && this.config.mediaPlayerControlsOnly) {
-        await registerMediaControls(this, entity, hassState);
+        if (!this.mediaControlEntities.has(entity.entity_id)) await registerMediaControls(this, entity, hassState);
         continue;
       }
 
@@ -1053,12 +1078,46 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
         `- ${this.matterbridgeDevices.has(entity) ? 'individual' : 'device'} entity ${CYAN}${entity}${db} mapped to endpoint ${CYAN}${endpoint === '' ? 'main' : endpoint}${db}`,
       );
     }
+  }
 
-    this.log.info(`Started platform ${idn}${this.config.name}${rs}${nf}: ${reason ?? ''}`);
+  /**
+   * Coalesces HA discovery events and serializes registration after startup.
+   * @returns {void} No return value.
+   */
+  private scheduleDiscovery(): void {
+    if (!this.isConfigured || this.discoveryStopped) return;
+    clearTimeout(this.discoveryTimer);
+    this.discoveryTimer = setTimeout(() => {
+      this.discoveryTimer = undefined;
+      if (this.discoveryStopped || !this.isConfigured) return;
+      if (this.discoveryTask) {
+        this.scheduleDiscovery();
+        return;
+      }
+      this.discoveryTask = this.refreshDevices().finally(() => {
+        this.discoveryTask = undefined;
+      });
+      fireAndForget(this.discoveryTask, this.log, 'Device discovery');
+    }, 1000).unref();
+  }
+
+  /**
+   * Discovers additions and initializes their Matter attributes from the latest HA states.
+   * @returns {Promise<void>} Resolves after new entity states have been applied.
+   */
+  private async refreshDevices(): Promise<void> {
+    const knownEntities = new Set(this.endpointNames.keys());
+    await this.discoverDevices();
+    for (const [entityId, state] of this.ha.hassStates) {
+      if (knownEntities.has(entityId) || !this.endpointNames.has(entityId)) continue;
+      const entity = this.ha.hassEntities.get(entityId);
+      if (entity) await this.updateHandler(entity.device_id, entityId, state, state);
+    }
   }
 
   override async onConfigure(): Promise<void> {
     await super.onConfigure();
+    this.scheduleDiscovery();
     this.log.info(`Configuring platform ${idn}${this.config.name}${rs}${nf}...`);
     try {
       for (const state of Array.from(this.ha.hassStates.values())) {
@@ -1125,6 +1184,11 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
   }
 
   override async onShutdown(reason?: string): Promise<void> {
+    this.discoveryStopped = true;
+    clearTimeout(this.discoveryTimer);
+    await this.discoveryTask?.catch((error: unknown) => {
+      this.log.debug(`Discovery stopped during shutdown: ${getErrorMessage(error)}`);
+    });
     // Save the state cache to restore it at the next startup.
     /* v8 ignore next cause if the platform is ready then the context is defined */
     if (this.context) await this.stateCache.save(this.context);

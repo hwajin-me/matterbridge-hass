@@ -14,6 +14,7 @@ import {
   generateState,
   getDomain,
   getEntityName,
+  getFirstValidName,
   getSortedHassAreas,
   hassAreaIdToMatterAreaId,
   getName,
@@ -814,8 +815,18 @@ describe('HassPlatform helpers', () => {
     entity.name = '';
     entity.original_name = 'Original Bedroom Light';
     state.attributes.friendly_name = '';
-    expect(getEntityName(createPlatform('Friendly name', state), entity)).toBe('');
-    expect(getEntityName(createPlatform('Entity name', state), entity)).toBe('');
+    expect(getEntityName(createPlatform('Friendly name', state), entity)).toBe('Original Bedroom Light');
+    expect(getEntityName(createPlatform('Entity name', state), entity)).toBe('Original Bedroom Light');
+
+    entity.name = '   ';
+    entity.original_name = '';
+    state.attributes.friendly_name = 'Bedroom Ceiling Light';
+    expect(getEntityName(createPlatform('Friendly name', state), entity)).toBe('Bedroom Ceiling Light');
+    expect(getEntityName(createPlatform('Entity name', state), entity)).toBe('Bedroom Ceiling Light');
+
+    state.attributes.friendly_name = '  ';
+    expect(getEntityName(createPlatform('Friendly name', state), entity)).toBeNull();
+    expect(getEntityName(createPlatform('Entity name', state), entity)).toBeNull();
 
     entity.name = null;
     entity.original_name = null;
@@ -854,5 +865,13 @@ describe('HassPlatform helpers', () => {
     expect(getEntityName(createPlatform(1, state), entity)).toBeNull();
 
     expect(getEntityName({ config: { splitNameStrategy: 'Entity name' }, ha: {} } as unknown as HomeAssistantPlatform, entity)).toBeNull();
+  });
+});
+
+describe('getFirstValidName', () => {
+  it('should skip invalid and blank candidates while preserving valid names', () => {
+    expect(getFirstValidName(null, '', '   ', 0, {}, 'Robot Vacuum')).toBe('Robot Vacuum');
+    expect(getFirstValidName('  Robot Vacuum  ', 'Other')).toBe('  Robot Vacuum  ');
+    expect(getFirstValidName(null, '', false)).toBeNull();
   });
 });

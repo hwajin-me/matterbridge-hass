@@ -3,7 +3,7 @@
  * @description This file contains helper functions for the Home Assistant platform.
  * @author Luca Liguori
  * @created 2024-09-13
- * @version 1.0.0
+ * @version 1.0.1
  * @license Apache-2.0
  *
  * Copyright 2026, 2027, 2028 Luca Liguori.
@@ -341,6 +341,9 @@ export function getName(entity: HassEntity | string): string {
 
 /**
  * Returns the name of a given entity based on the specified strategy.
+ * Empty and whitespace-only names are skipped so registry overrides cannot
+ * suppress a valid original name or Home Assistant friendly_name.
+ * Vacuums without any usable names fall back to their entity ID.
  *
  * @param {HomeAssistantPlatform} platform - The Home Assistant platform instance.
  * @param {HassEntity} entity - The Home Assistant entity to check.
@@ -363,9 +366,24 @@ export function getEntityName(platform: HomeAssistantPlatform, entity: HassEntit
     return null;
   }
 
-  return platform.config.splitNameStrategy === 'Friendly name'
-    ? (state.attributes?.friendly_name ?? entity.name ?? entity.original_name ?? null)
-    : (entity.name ?? entity.original_name ?? state.attributes?.friendly_name ?? null);
+  const candidates =
+    platform.config.splitNameStrategy === 'Friendly name'
+      ? [state.attributes?.friendly_name, entity.name, entity.original_name]
+      : [entity.name, entity.original_name, state.attributes?.friendly_name];
+  if (isValidString(entity.entity_id) && /^vacuum\.[a-z0-9_]+$/.test(entity.entity_id)) candidates.push(entity.entity_id);
+  return getFirstValidName(...candidates);
+}
+
+/**
+ * Returns the first nonblank string without changing a valid name's contents.
+ * @param {unknown[]} names Name candidates in priority order.
+ * @returns {string | null} First usable name, or null when none is available.
+ */
+export function getFirstValidName(...names: unknown[]): string | null {
+  for (const name of names) {
+    if (isValidString(name, 1) && name.trim().length > 0) return name;
+  }
+  return null;
 }
 
 /**
